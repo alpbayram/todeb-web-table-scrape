@@ -261,19 +261,27 @@ async function run() {
 //  APPWRITE FUNCTION HANDLER
 // =====================
 
-export default async function (req, res) {
+export default async ({ req, res, log, error }) => {
   try {
     const result = await run();
-    res.json({
+
+    return res.json({
       success: true,
-      ...result,
+      ...result
     });
   } catch (err) {
-    console.error(err);
-    res.json({
+    if (error) {
+      error(err);
+    } else {
+      console.error(err);
+    }
+
+    return res.json({
       success: false,
-      error: err.message ?? String(err),
+      error: err.message ?? String(err)
     });
   }
-}
+};
+
+
 
