@@ -116,7 +116,7 @@ function compareKuruluslar(oldData, newData) {
 
   const added = newData.filter(item => isNewlyAddedCode(item.kurulus_kodu));
   const removed = oldData.filter(item => isRemovedCode(item.kurulus_kodu));
-
+console.log(removed);
   return { added, removed };
 }
 
@@ -635,6 +635,7 @@ export default async ({ req, res, log, error }) => {
     });
   }
 };
+
 
 
 
