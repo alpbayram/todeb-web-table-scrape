@@ -116,7 +116,7 @@ function compareKuruluslar(oldData, newData) {
 
   const added = newData.filter(item => isNewlyAddedCode(item.kurulus_kodu));
   const removed = oldData.filter(item => isRemovedCode(item.kurulus_kodu));
-context.log(removed);
+
   return { added, removed };
 }
 
@@ -594,6 +594,7 @@ async function run() {
   const newData = await getNewDataFromWeb();      // newData (web tablosu)
 
   const { added, removed } = compareKuruluslar(dbData, newData);
+  log(removed);
   const commonKuruluslar = getCommonKuruluslar(dbData, newData);
   const { degisenler3 } = kontrolEt(commonKuruluslar, dbData);
 await syncDbWithNewData(databases, dbData, newData, removed);
@@ -635,6 +636,7 @@ export default async ({ req, res, log, error }) => {
     });
   }
 };
+
 
 
 
