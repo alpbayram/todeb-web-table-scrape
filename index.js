@@ -1,18 +1,21 @@
 // index.js
 
+require("dotenv").config(); // .env kullanıyorsan (Appwrite Function içinde zorunlu değil)
+
 // Appwrite SDK
 const { Client, Databases } = require("appwrite");
 // HTML parse için (npm i cheerio)
 const cheerio = require("cheerio");
 
 // =====================
-//  CONFIG
+//  CONFIG (.env'den)
 // =====================
 
-const APPWRITE_ENDPOINT = "https://YOUR-ENDPOINT";     // ör: https://cloud.appwrite.io/v1
-const APPWRITE_PROJECT_ID = "YOUR-PROJECT-ID";
-const APPWRITE_DATABASE_ID = "YOUR-DATABASE-ID";
-const APPWRITE_COLLECTION_ID = "YOUR-COLLECTION-ID";
+const APPWRITE_ENDPOINT = process.env.APPWRITE_ENDPOINT;
+const APPWRITE_PROJECT_ID = process.env.APPWRITE_PROJECT_ID;
+const APPWRITE_API_KEY = process.env.APPWRITE_API_KEY;
+const APPWRITE_DATABASE_ID = process.env.DATABASE_ID;
+const APPWRITE_COLLECTION_ID = process.env.COLLECTION_ID;
 
 // Web’den veri çekilecek URL
 const WEB_URL = "https://ornek.site/kuruluslar.html";
@@ -26,7 +29,8 @@ const MAIL_FUNCTION_URL = "https://6909b832001efa359c90.fra.appwrite.run";
 
 const client = new Client()
     .setEndpoint(APPWRITE_ENDPOINT)
-    .setProject(APPWRITE_PROJECT_ID);
+    .setProject(APPWRITE_PROJECT_ID)
+    .setKey(APPWRITE_API_KEY);
 
 const databases = new Databases(client);
 
@@ -60,7 +64,7 @@ async function getNewDataFromWeb() {
 
     const newData = [];
 
-    // Buradaki selector'u kendi HTML yapına göre değiştir
+    // kendi tablo yapına göre selector’u güncelle
     $("table#kuruluslar tbody tr").each((_, tr) => {
         const tds = $(tr).find("td");
 
@@ -237,6 +241,6 @@ async function run() {
     });
 }
 
-// Appwrite Function içindeysen burayı handler’a göre uyarlarsın.
-// Lokal script gibi çalıştırmak istersen:
+// Appwrite Function içinde handler’a göre çağırırsın.
+// Lokal script gibi denemek istersen:
 run().catch(console.error);
