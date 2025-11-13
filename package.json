@@ -1,15 +1,10 @@
 {
-	"name": "webwatcher",
-	"version": "1.0.0",
-	"description": "WebWatcher Appwrite Function",
-	"main": "index.js",
-	"type": "module",
-	"scripts": {
-		"start": "node index.js"
-	},
-	"dependencies": {
-		"node-appwrite": "^14.0.0",
-		"cheerio": "^1.0.0-rc.12"
-	}
+  "name": "webwatcher",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "src/index.js",
+  "dependencies": {
+    "node-appwrite": "^13.0.0",
+    "cheerio": "^1.0.0"
+  }
 }
-
