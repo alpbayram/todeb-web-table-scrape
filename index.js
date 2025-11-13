@@ -594,13 +594,13 @@ async function run() {
   const { added, removed } = compareKuruluslar(dbData, newData);
   const commonKuruluslar = getCommonKuruluslar(dbData, newData);
   const { degisenler3 } = kontrolEt(commonKuruluslar, dbData);
-
+await syncDbWithNewData(databases, dbData, newData, removed);
   await sendReportMail({
     added,
     removed,
     changed: degisenler3,
   });
-  await syncDbWithNewData(databases, dbData, newData, removed);
+  
   return {
     added,
     removed,
@@ -633,6 +633,7 @@ export default async ({ req, res, log, error }) => {
     });
   }
 };
+
 
 
 
