@@ -261,25 +261,325 @@ async function syncDbWithNewData(databases, dbData, newData, removed) {
 }
 
 
+
+
+function escapeHtml(str) {
+  return String(str || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function renderRows(items) {
+  if (!items || items.length === 0) {
+    return `
+      <tr>
+        <td style="padding:8px;border-top:1px solid #d4d4d4;" colspan="3">
+          Kayıt bulunamadı.
+        </td>
+      </tr>
+    `;
+  }
+
+  return items
+    .map(item => {
+      const yetkiText =
+        item.yetkiler && item.yetkiler.length
+          ? item.yetkiler.join(", ")
+          : "-";
+
+      return `
+        <tr>
+          <td style="padding:8px;border-top:1px solid #d4d4d4;">${escapeHtml(
+            item.kurulus_kodu
+          )}</td>
+          <td style="padding:8px;border-top:1px solid #d4d4d4;">${escapeHtml(
+            item.kurulus_adi
+          )}</td>
+          <td style="padding:8px;border-top:1px solid #d4d4d4;">${escapeHtml(
+            yetkiText
+          )}</td>
+        </tr>
+      `;
+    })
+    .join("");
+}
+
+function buildEmailHtml(added, removed, changed) {
+  const addedRows = renderRows(added);
+  const removedRows = renderRows(removed);
+  const changedRows = renderRows(changed);
+
+  const today = new Date().toLocaleDateString("tr-TR");
+
+  return `
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Yeni Değişiklikler</title>
+  </head>
+  <body
+    style="margin:0;padding:0;background-color:#ffffff;font-family:Arial,Helvetica,sans-serif;"
+  >
+    <table
+      width="100%"
+      cellpadding="0"
+      cellspacing="0"
+      border="0"
+      style="background-color:#ffffff;"
+    >
+      <tr>
+        <td align="center">
+          <table
+            width="600"
+            cellpadding="0"
+            cellspacing="0"
+            border="0"
+            style="width:600px;max-width:600px;border:1px solid #d4d4d4;background-color:#ffffff;"
+          >
+            <!-- Header -->
+            <tr>
+              <td
+                align="center"
+                style="background-color:#d4d4d4;padding:16px 0 12px 0;"
+              >
+                <img
+                  src="https://raw.githubusercontent.com/alpbayram/todeb-mail/refs/heads/main/TODEB_Logo.png"
+                  alt="TODEB Logo"
+                  width="280"
+                  height="auto"
+                  style="display:block;border:none;outline:none;text-decoration:none;"
+                />
+              </td>
+            </tr>
+            <tr>
+              <td
+                align="center"
+                style="background-color:#d4d4d4;padding:8px 24px 12px 24px;"
+              >
+                <h1
+                  style="margin:0;font-size:24px;font-weight:bold;color:#000000;"
+                >
+                  Yeni Değişiklikler
+                </h1>
+                <p
+                  style="margin:8px 0 0 0;font-size:14px;color:#333333;font-weight:bold;"
+                >
+                  Son güncellemeler aşağıda listelenmiştir.
+                </p>
+              </td>
+            </tr>
+
+            <!-- Spacer -->
+            <tr><td height="24" style="font-size:0;line-height:0;">&nbsp;</td></tr>
+
+            <!-- YENİ EKLENENLER -->
+            <tr>
+              <td style="padding:0 24px 16px 24px;">
+                <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                  <tr>
+                    <td
+                      style="font-size:18px;font-weight:bold;color:#000000;padding-bottom:8px;"
+                    >
+                      Yeni Eklenenler
+                    </td>
+                  </tr>
+                  <tr>
+                    <td
+                      style="border:1px solid #d4d4d4;padding:0;font-size:14px;color:#405464;"
+                    >
+                      <table
+                        width="100%"
+                        cellpadding="0"
+                        cellspacing="0"
+                        border="0"
+                        style="border-collapse:collapse;"
+                      >
+                        <thead>
+                          <tr>
+                            <th
+                              align="left"
+                              style="padding:8px;border-bottom:1px solid #d4d4d4;font-size:13px;font-weight:bold;background-color:#f5f5f5;"
+                            >
+                              Kuruluş Kodu
+                            </th>
+                            <th
+                              align="left"
+                              style="padding:8px;border-bottom:1px solid #d4d4d4;font-size:13px;font-weight:bold;background-color:#f5f5f5;"
+                            >
+                              Kuruluş Adı
+                            </th>
+                            <th
+                              align="left"
+                              style="padding:8px;border-bottom:1px solid #d4d4d4;font-size:13px;font-weight:bold;background-color:#f5f5f5;"
+                            >
+                              Yetkileri
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          ${addedRows}
+                        </tbody>
+                      </table>
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+
+            <!-- SİLİNENLER -->
+            <tr>
+              <td style="padding:0 24px 16px 24px;">
+                <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                  <tr>
+                    <td
+                      style="font-size:18px;font-weight:bold;color:#000000;padding-bottom:8px;"
+                    >
+                      Silinenler
+                    </td>
+                  </tr>
+                  <tr>
+                    <td
+                      style="border:1px solid #d4d4d4;padding:0;font-size:14px;color:#405464;"
+                    >
+                      <table
+                        width="100%"
+                        cellpadding="0"
+                        cellspacing="0"
+                        border="0"
+                        style="border-collapse:collapse;"
+                      >
+                        <thead>
+                          <tr>
+                            <th
+                              align="left"
+                              style="padding:8px;border-bottom:1px solid #d4d4d4;font-size:13px;font-weight:bold;background-color:#f5f5f5;"
+                            >
+                              Kuruluş Kodu
+                            </th>
+                            <th
+                              align="left"
+                              style="padding:8px;border-bottom:1px solid #d4d4d4;font-size:13px;font-weight:bold;background-color:#f5f5f5;"
+                            >
+                              Kuruluş Adı
+                            </th>
+                            <th
+                              align="left"
+                              style="padding:8px;border-bottom:1px solid #d4d4d4;font-size:13px;font-weight:bold;background-color:#f5f5f5;"
+                            >
+                              Yetkileri
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          ${removedRows}
+                        </tbody>
+                      </table>
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+
+            <!-- DEĞİŞENLER -->
+            <tr>
+              <td style="padding:0 24px 24px 24px;">
+                <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                  <tr>
+                    <td
+                      style="font-size:18px;font-weight:bold;color:#000000;padding-bottom:8px;"
+                    >
+                      Değişenler
+                    </td>
+                  </tr>
+                  <tr>
+                    <td
+                      style="border:1px solid #d4d4d4;padding:0;font-size:14px;color:#405464;"
+                    >
+                      <table
+                        width="100%"
+                        cellpadding="0"
+                        cellspacing="0"
+                        border="0"
+                        style="border-collapse:collapse;"
+                      >
+                        <thead>
+                          <tr>
+                            <th
+                              align="left"
+                              style="padding:8px;border-bottom:1px solid #d4d4d4;font-size:13px;font-weight:bold;background-color:#f5f5f5;"
+                            >
+                              Kuruluş Kodu
+                            </th>
+                            <th
+                              align="left"
+                              style="padding:8px;border-bottom:1px solid #d4d4d4;font-size:13px;font-weight:bold;background-color:#f5f5f5;"
+                            >
+                              Kuruluş Adı
+                            </th>
+                            <th
+                              align="left"
+                              style="padding:8px;border-bottom:1px solid #d4d4d4;font-size:13px;font-weight:bold;background-color:#f5f5f5;"
+                            >
+                              Yetkileri
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          ${changedRows}
+                        </tbody>
+                      </table>
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+
+            <!-- Footer -->
+            <tr>
+              <td
+                align="center"
+                style="background-color:#f0f0f0;padding:12px;font-size:12px;color:#666666;"
+              >
+                Distil.io Otomatik Bildirim • ${today}
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>`;
+}
+
+
 // =====================
 //  MAIL FUNCTION ÇAĞIRMA
 // =====================
 
 async function sendReportMail({ added, removed, changed }) {
+  const html = buildEmailHtml(added, removed, changed);
+
   await fetch(MAIL_FUNCTION_URL, {
     method: "POST",
     headers: {
-      "Content-Type": "application/json",
+      "Content-Type": "application/json"
     },
     body: JSON.stringify({
-      added: added,
-      removed: removed,
-      changed: changed,
+      added,
+      removed,
+      changed,
       to: "alp.bayram@todeb.org.tr",
       subject: "WebWatcher Güncelleme Raporu",
-    }),
+      html
+    })
   });
 }
+
 
 // =====================
 //  ANA ÇALIŞTIRMA
@@ -333,6 +633,7 @@ export default async ({ req, res, log, error }) => {
     });
   }
 };
+
 
 
 
