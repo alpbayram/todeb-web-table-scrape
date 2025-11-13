@@ -1,5 +1,5 @@
 import { Client, Databases } from "node-appwrite";
-import cheerio from "cheerio";
+import * as cheerio from "cheerio";
 
 // =====================
 //  CONFIG (.env'den)
@@ -12,7 +12,7 @@ const APPWRITE_DATABASE_ID = process.env.DATABASE_ID;
 const APPWRITE_COLLECTION_ID = process.env.COLLECTION_ID;
 
 // Web’den veri çekilecek URL
-const WEB_URL = "https://ornek.site/kuruluslar.html";
+const WEB_URL = "https://www.tcmb.gov.tr/wps/wcm/connect/tr/tcmb+tr/main+menu/temel+faaliyetler/odeme+hizmetleri/odeme+kuruluslari";
 
 // Mail atan Appwrite Function endpoint’in
 const MAIL_FUNCTION_URL = "https://6909b832001efa359c90.fra.appwrite.run";
@@ -21,30 +21,34 @@ const MAIL_FUNCTION_URL = "https://6909b832001efa359c90.fra.appwrite.run";
 //  APPWRITE CLIENT
 // =====================
 
-const client = new Client()
+function createClient() {
+  const client = new Client()
     .setEndpoint(APPWRITE_ENDPOINT)
     .setProject(APPWRITE_PROJECT_ID)
     .setKey(APPWRITE_API_KEY);
 
-const databases = new Databases(client);
+  const databases = new Databases(client);
+
+  return { client, databases };
+}
 
 // =====================
 //  DB'DEN VERİ ÇEK (oldData)
 // =====================
 
-async function getDbData() {
-    const response = await databases.listDocuments(
-        APPWRITE_DATABASE_ID,
-        APPWRITE_COLLECTION_ID
-    );
+async function getDbData(databases) {
+  const response = await databases.listDocuments(
+    APPWRITE_DATABASE_ID,
+    APPWRITE_COLLECTION_ID
+  );
 
-    const dbData = response.documents.map(doc => ({
-        kurulus_kodu: doc.kurulus_kodu,
-        kurulus_adi: doc.kurulus_adi,
-        yetkiler: doc.yetkiler
-    }));
+  const dbData = response.documents.map(doc => ({
+    kurulus_kodu: doc.kurulus_kodu,
+    kurulus_adi: doc.kurulus_adi,
+    yetkiler: doc.yetkiler,
+  }));
 
-    return dbData;
+  return dbData;
 }
 
 // =====================
@@ -52,34 +56,35 @@ async function getDbData() {
 // =====================
 
 async function getNewDataFromWeb() {
-    const res = await fetch(WEB_URL);
-    const html = await res.text();
-    const $ = cheerio.load(html);
+  const res = await fetch(WEB_URL);
+  const html = await res.text();
+  const $ = cheerio.load(html);
 
-    const newData = [];
+  const newData = [];
 
-    // kendi tablo yapına göre selector’u güncelle
-    $("table#kuruluslar tbody tr").each((_, tr) => {
-        const tds = $(tr).find("td");
+  // BURAYI kendi tablo yapına göre güncellemen gerekecek
+  // Şimdilik placeholder:
+  $("table#kuruluslar tbody tr").each((_, tr) => {
+    const tds = $(tr).find("td");
 
-        const kurulus_kodu = $(tds[0]).text().trim();
-        const kurulus_adi = $(tds[1]).text().trim();
-        const yetkilerText = $(tds[2]).text().trim(); // ör: "a, b, c"
-        const yetkiler = yetkilerText
-            .split(",")
-            .map(y => y.trim())
-            .filter(Boolean);
+    const kurulus_kodu = $(tds[0]).text().trim();
+    const kurulus_adi = $(tds[1]).text().trim();
+    const yetkilerText = $(tds[2]).text().trim(); // ör: "a, b, c"
+    const yetkiler = yetkilerText
+      .split(",")
+      .map(y => y.trim())
+      .filter(Boolean);
 
-        if (kurulus_kodu) {
-            newData.push({
-                kurulus_kodu,
-                kurulus_adi,
-                yetkiler
-            });
-        }
-    });
+    if (kurulus_kodu) {
+      newData.push({
+        kurulus_kodu,
+        kurulus_adi,
+        yetkiler,
+      });
+    }
+  });
 
-    return newData;
+  return newData;
 }
 
 // =====================
@@ -87,113 +92,113 @@ async function getNewDataFromWeb() {
 // =====================
 
 function compareKuruluslar(oldData, newData) {
-    const oldCodes = new Set(oldData.map(item => item.kurulus_kodu));
-    const newCodes = new Set(newData.map(item => item.kurulus_kodu));
+  const oldCodes = new Set(oldData.map(item => item.kurulus_kodu));
+  const newCodes = new Set(newData.map(item => item.kurulus_kodu));
 
-    function isNewlyAddedCode(code) {
-        return !oldCodes.has(code);
-    }
+  function isNewlyAddedCode(code) {
+    return !oldCodes.has(code);
+  }
 
-    function isRemovedCode(code) {
-        return !newCodes.has(code);
-    }
+  function isRemovedCode(code) {
+    return !newCodes.has(code);
+  }
 
-    const added = newData.filter(item => isNewlyAddedCode(item.kurulus_kodu));
-    const removed = oldData.filter(item => isRemovedCode(item.kurulus_kodu));
+  const added = newData.filter(item => isNewlyAddedCode(item.kurulus_kodu));
+  const removed = oldData.filter(item => isRemovedCode(item.kurulus_kodu));
 
-    return { added, removed };
+  return { added, removed };
 }
 
 function getCommonKuruluslar(oldData, newData) {
-    const oldCodes = oldData.map(item => item.kurulus_kodu);
-    const newCodes = newData.map(item => item.kurulus_kodu);
+  const oldCodes = oldData.map(item => item.kurulus_kodu);
+  const newCodes = newData.map(item => item.kurulus_kodu);
 
-    const newCodesSet = new Set(newCodes);
+  const newCodesSet = new Set(newCodes);
 
-    const commonCodes = oldCodes.filter(code => newCodesSet.has(code));
+  const commonCodes = oldCodes.filter(code => newCodesSet.has(code));
 
-    const commonKuruluslar = oldData.filter(item => {
-        return commonCodes.includes(item.kurulus_kodu);
-    });
+  const commonKuruluslar = oldData.filter(item => {
+    return commonCodes.includes(item.kurulus_kodu);
+  });
 
-    return commonKuruluslar;
+  return commonKuruluslar;
 }
 
 function findChangedKuruluslar(commonKuruluslar, dbData) {
-    const degisenler = [];
+  const degisenler = [];
 
-    for (let i = 0; i < commonKuruluslar.length; i++) {
-        const item = commonKuruluslar[i];
+  for (let i = 0; i < commonKuruluslar.length; i++) {
+    const item = commonKuruluslar[i];
 
-        const kod = item.kurulus_kodu;
-        const yeniAdi = item.kurulus_adi;
+    const kod = item.kurulus_kodu;
+    const yeniAdi = item.kurulus_adi;
 
-        const dbRow = dbData.find(dbItem => dbItem.kurulus_kodu === kod);
-        if (!dbRow) continue;
+    const dbRow = dbData.find(dbItem => dbItem.kurulus_kodu === kod);
+    if (!dbRow) continue;
 
-        const eskiAdi = dbRow.kurulus_adi;
+    const eskiAdi = dbRow.kurulus_adi;
 
-        const isimDegistiMi = yeniAdi !== eskiAdi;
+    const isimDegistiMi = yeniAdi !== eskiAdi;
 
-        if (isimDegistiMi) {
-            degisenler.push(item);
-        }
+    if (isimDegistiMi) {
+      degisenler.push(item);
     }
+  }
 
-    return degisenler;
+  return degisenler;
 }
 
 function findChangedYetkiler(commonKuruluslar, dbData) {
-    const degisenler = [];
+  const degisenler = [];
 
-    for (let i = 0; i < commonKuruluslar.length; i++) {
-        const item = commonKuruluslar[i];
+  for (let i = 0; i < commonKuruluslar.length; i++) {
+    const item = commonKuruluslar[i];
 
-        const kod = item.kurulus_kodu;
-        const yeniYetkiler = item.yetkiler;
+    const kod = item.kurulus_kodu;
+    const yeniYetkiler = item.yetkiler;
 
-        const dbRow = dbData.find(dbItem => dbItem.kurulus_kodu === kod);
-        if (!dbRow) continue;
+    const dbRow = dbData.find(dbItem => dbItem.kurulus_kodu === kod);
+    if (!dbRow) continue;
 
-        const eskiYetkiler = dbRow.yetkiler;
+    const eskiYetkiler = dbRow.yetkiler;
 
-        const yetkiDegistiMi =
-            eskiYetkiler.length !== yeniYetkiler.length ||
-            eskiYetkiler.some(y => !yeniYetkiler.includes(y)) ||
-            yeniYetkiler.some(y => !eskiYetkiler.includes(y));
+    const yetkiDegistiMi =
+      eskiYetkiler.length !== yeniYetkiler.length ||
+      eskiYetkiler.some(y => !yeniYetkiler.includes(y)) ||
+      yeniYetkiler.some(y => !eskiYetkiler.includes(y));
 
-        if (yetkiDegistiMi) {
-            degisenler.push(item);
-        }
+    if (yetkiDegistiMi) {
+      degisenler.push(item);
     }
+  }
 
-    return degisenler;
+  return degisenler;
 }
 
 function kontrolEt(commonKuruluslar, dbData) {
-    const degisenler1 = findChangedKuruluslar(commonKuruluslar, dbData);
-    const degisenler2 = findChangedYetkiler(commonKuruluslar, dbData);
+  const degisenler1 = findChangedKuruluslar(commonKuruluslar, dbData);
+  const degisenler2 = findChangedYetkiler(commonKuruluslar, dbData);
 
-    const tumDegisenler = [...degisenler1, ...degisenler2];
+  const tumDegisenler = [...degisenler1, ...degisenler2];
 
-    const degisenler3 = [];
-    const seen = new Set();
+  const degisenler3 = [];
+  const seen = new Set();
 
-    for (let i = 0; i < tumDegisenler.length; i++) {
-        const item = tumDegisenler[i];
-        const kod = item.kurulus_kodu;
+  for (let i = 0; i < tumDegisenler.length; i++) {
+    const item = tumDegisenler[i];
+    const kod = item.kurulus_kodu;
 
-        if (!seen.has(kod)) {
-            seen.add(kod);
-            degisenler3.push(item);
-        }
+    if (!seen.has(kod)) {
+      seen.add(kod);
+      degisenler3.push(item);
     }
+  }
 
-    return {
-        degisenler1,
-        degisenler2,
-        degisenler3
-    };
+  return {
+    degisenler1,
+    degisenler2,
+    degisenler3,
+  };
 }
 
 // =====================
@@ -201,19 +206,19 @@ function kontrolEt(commonKuruluslar, dbData) {
 // =====================
 
 async function sendReportMail({ added, removed, changed }) {
-    await fetch(MAIL_FUNCTION_URL, {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-            added: added,
-            removed: removed,
-            changed: changed,
-            to: "alp.bayram@todeb.org.tr",
-            subject: "WebWatcher Güncelleme Raporu"
-        })
-    });
+  await fetch(MAIL_FUNCTION_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      added: added,
+      removed: removed,
+      changed: changed,
+      to: "alp.bayram@todeb.org.tr",
+      subject: "WebWatcher Güncelleme Raporu",
+    }),
+  });
 }
 
 // =====================
@@ -221,22 +226,44 @@ async function sendReportMail({ added, removed, changed }) {
 // =====================
 
 async function run() {
-    const dbData = await getDbData();            // oldData
-    const newData = await getNewDataFromWeb();   // newData (web tablosu)
+  const { databases } = createClient();
 
-    const { added, removed } = compareKuruluslar(dbData, newData);
-    const commonKuruluslar = getCommonKuruluslar(dbData, newData);
-    const { degisenler3 } = kontrolEt(commonKuruluslar, dbData);
+  const dbData = await getDbData(databases);      // oldData
+  const newData = await getNewDataFromWeb();      // newData (web tablosu)
 
-    await sendReportMail({
-        added,
-        removed,
-        changed: degisenler3
-    });
+  const { added, removed } = compareKuruluslar(dbData, newData);
+  const commonKuruluslar = getCommonKuruluslar(dbData, newData);
+  const { degisenler3 } = kontrolEt(commonKuruluslar, dbData);
+
+  await sendReportMail({
+    added,
+    removed,
+    changed: degisenler3,
+  });
+
+  return {
+    added,
+    removed,
+    changed: degisenler3,
+  };
 }
 
-// Appwrite Function içinde handler’a göre çağırırsın.
-// Lokal script gibi denemek istersen:
-run().catch(console.error);
+// =====================
+//  APPWRITE FUNCTION HANDLER
+// =====================
 
-
+export default async function (req, res) {
+  try {
+    const result = await run();
+    res.json({
+      success: true,
+      ...result,
+    });
+  } catch (err) {
+    console.error(err);
+    res.json({
+      success: false,
+      error: err.message ?? String(err),
+    });
+  }
+}
