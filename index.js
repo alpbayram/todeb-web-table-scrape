@@ -56,37 +56,46 @@ async function getDbData(databases) {
 // =====================
 
 async function getNewDataFromWeb() {
-  const res = await fetch(WEB_URL);
-  const html = await res.text();
-  const $ = cheerio.load(html);
+    const res = await fetch(WEB_URL);
+    const html = await res.text();
+    const $ = cheerio.load(html);
 
-  const newData = [];
+    const newData = [];
+    const harfler = ["a", "b", "c", "ç", "d", "e", "f", "g"];
 
-  // BURAYI kendi tablo yapına göre güncellemen gerekecek
-  // Şimdilik placeholder:
-  $("table#kuruluslar tbody tr").each((_, tr) => {
-    const tds = $(tr).find("td");
+    $("tbody > tr").slice(2).each((_, tr) => {
+        const tds = $(tr).find("td");
+        if (tds.length < 3) return;
 
-    const kurulus_kodu = $(tds[0]).text().trim();
-    const kurulus_adi = $(tds[1]).text().trim();
-    const yetkilerText = $(tds[2]).text().trim(); // ör: "a, b, c"
-    const yetkiler = yetkilerText
-      .split(",")
-      .map(y => y.trim())
-      .filter(Boolean);
+        const kurulus_kodu = $(tds[1]).text().trim();
+        let kurulus_adi = $(tds[2]).text().trim();
+        kurulus_adi = kurulus_adi.replace(/\s+/g, " ");
 
-    if (kurulus_kodu) {
-      newData.push({
-        kurulus_kodu,
-        kurulus_adi,
-        yetkiler,
-      });
-    }
-  });
+        const yetkiler = [];
 
-  return newData;
+        for (let i = 0; i < harfler.length; i++) {
+            const cellIndex = 3 + i;
+            if (cellIndex >= tds.length) break;
+
+            let cellText = $(tds[cellIndex]).text();
+            cellText = cellText.replace(/\u00a0/g, "").trim();
+
+            if (cellText !== "") {
+                yetkiler.push(harfler[i]);
+            }
+        }
+
+        if (kurulus_kodu) {
+            newData.push({
+                kurulus_kodu,
+                kurulus_adi,
+                yetkiler
+            });
+        }
+    });
+
+    return newData;
 }
-
 // =====================
 //  KARŞILAŞTIRMA FONKSİYONLARI
 // =====================
@@ -267,3 +276,4 @@ export default async function (req, res) {
     });
   }
 }
+
