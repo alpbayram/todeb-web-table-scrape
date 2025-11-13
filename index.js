@@ -128,12 +128,14 @@ function getCommonKuruluslar(oldData, newData) {
 
   const commonCodes = oldCodes.filter(code => newCodesSet.has(code));
 
-  const commonKuruluslar = oldData.filter(item => {
+  // 🔴 ÖNEMLİ: Ortakları newData'dan alıyoruz (yeni snapshot)
+  const commonKuruluslar = newData.filter(item => {
     return commonCodes.includes(item.kurulus_kodu);
   });
 
   return commonKuruluslar;
 }
+
 
 function findChangedKuruluslar(commonKuruluslar, dbData) {
   const degisenler = [];
@@ -633,6 +635,7 @@ export default async ({ req, res, log, error }) => {
     });
   }
 };
+
 
 
 
