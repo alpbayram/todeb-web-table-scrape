@@ -1,4 +1,4 @@
-import { Client, Databases } from "appwrite";
+import { Client, Databases } from "node-appwrite";
 import cheerio from "cheerio";
 
 // =====================
@@ -238,4 +238,5 @@ async function run() {
 // Appwrite Function içinde handler’a göre çağırırsın.
 // Lokal script gibi denemek istersen:
 run().catch(console.error);
+
 
