@@ -1,11 +1,5 @@
-// index.js
-
-require("dotenv").config(); // .env kullanıyorsan (Appwrite Function içinde zorunlu değil)
-
-// Appwrite SDK
-const { Client, Databases } = require("appwrite");
-// HTML parse için (npm i cheerio)
-const cheerio = require("cheerio");
+import { Client, Databases } from "appwrite";
+import cheerio from "cheerio";
 
 // =====================
 //  CONFIG (.env'den)
@@ -244,3 +238,4 @@ async function run() {
 // Appwrite Function içinde handler’a göre çağırırsın.
 // Lokal script gibi denemek istersen:
 run().catch(console.error);
+
