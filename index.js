@@ -1,4 +1,4 @@
-import { Client, Databases } from "node-appwrite";
+import { Client, Databases, ID } from "node-appwrite";
 import * as cheerio from "cheerio";
 
 // =====================
@@ -37,19 +37,21 @@ function createClient() {
 // =====================
 
 async function getDbData(databases) {
-  const response = await databases.listDocuments(
-    APPWRITE_DATABASE_ID,
-    APPWRITE_COLLECTION_ID
-  );
+    const response = await databases.listDocuments(
+        APPWRITE_DATABASE_ID,
+        APPWRITE_COLLECTION_ID
+    );
 
-  const dbData = response.documents.map(doc => ({
-    kurulus_kodu: doc.kurulus_kodu,
-    kurulus_adi: doc.kurulus_adi,
-    yetkiler: doc.yetkiler,
-  }));
+    const dbData = response.documents.map(doc => ({
+        docId: doc.$id,                // 🔴 BURASI YENİ
+        kurulus_kodu: doc.kurulus_kodu,
+        kurulus_adi: doc.kurulus_adi,
+        yetkiler: doc.yetkiler
+    }));
 
-  return dbData;
+    return dbData;
 }
+
 
 // =====================
 //  WEB'DEN VERİ ÇEK (newData)
@@ -210,6 +212,55 @@ function kontrolEt(commonKuruluslar, dbData) {
   };
 }
 
+async function syncDbWithNewData(databases, dbData, newData, removed) {
+    const dbDataByCode = new Map(
+        dbData.map(item => [item.kurulus_kodu, item])
+    );
+
+    // 1) Removed olanları sil
+    for (let i = 0; i < removed.length; i++) {
+        const item = removed[i];
+        const existing = dbDataByCode.get(item.kurulus_kodu);
+
+        if (existing && existing.docId) {
+            await databases.deleteDocument(
+                APPWRITE_DATABASE_ID,
+                APPWRITE_COLLECTION_ID,
+                existing.docId
+            );
+        }
+    }
+
+    // 2) newData'yı DB'ye yaz (varsa update, yoksa create)
+    for (let i = 0; i < newData.length; i++) {
+        const item = newData[i];
+        const existing = dbDataByCode.get(item.kurulus_kodu);
+
+        const payload = {
+            kurulus_kodu: item.kurulus_kodu,
+            kurulus_adi: item.kurulus_adi,
+            yetkiler: item.yetkiler
+        };
+
+        if (existing && existing.docId) {
+            await databases.updateDocument(
+                APPWRITE_DATABASE_ID,
+                APPWRITE_COLLECTION_ID,
+                existing.docId,
+                payload
+            );
+        } else {
+            await databases.createDocument(
+                APPWRITE_DATABASE_ID,
+                APPWRITE_COLLECTION_ID,
+                ID.unique(),
+                payload
+            );
+        }
+    }
+}
+
+
 // =====================
 //  MAIL FUNCTION ÇAĞIRMA
 // =====================
@@ -249,7 +300,7 @@ async function run() {
     removed,
     changed: degisenler3,
   });
-
+  await syncDbWithNewData(databases, dbData, newData, removed);
   return {
     added,
     removed,
@@ -282,6 +333,7 @@ export default async ({ req, res, log, error }) => {
     });
   }
 };
+
 
 
 
