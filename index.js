@@ -547,7 +547,7 @@ function buildEmailHtml(added, removed, changed) {
                 align="center"
                 style="background-color:#f0f0f0;padding:12px;font-size:12px;color:#666666;"
               >
-                Distil.io Otomatik Bildirim • ${today}
+              WebWatcher Otomatik Bildirim • ${today}
               </td>
             </tr>
           </table>
@@ -635,6 +635,7 @@ export default async ({ req, res, log, error }) => {
     });
   }
 };
+
 
 
 
