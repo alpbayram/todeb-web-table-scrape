@@ -166,30 +166,51 @@ function findChangedYetkiler(commonKuruluslar, dbData) {
 
 
 function kontrolEt(commonKuruluslar, dbData) {
-    const degisenler1 = findChangedKuruluslar(commonKuruluslar, dbData);
-    const degisenler2 = findChangedYetkiler(commonKuruluslar, dbData);
+  const degisenler1 = findChangedKuruluslar(commonKuruluslar, dbData);
+  const degisenler2 = findChangedYetkiler(commonKuruluslar, dbData);
 
-    const tumDegisenler = [...degisenler1, ...degisenler2];
+  // degisenler1 + degisenler2 içindeki NEW data nesnelerini uniq hale getir
+  const tumDegisenler = [...degisenler1, ...degisenler2];
 
-    const degisenler3 = [];
-    const seen = new Set();
+  const uniqNewItems = [];
+  const seen = new Set();
 
-    for (let i = 0; i < tumDegisenler.length; i++) {
-        const item = tumDegisenler[i];
-        const kod = item.kurulus_kodu;
+  for (let i = 0; i < tumDegisenler.length; i++) {
+    const item = tumDegisenler[i];
+    const kod = item.kurulus_kodu;
 
-        if (!seen.has(kod)) {
-            seen.add(kod);
-            degisenler3.push(item);
-        }
+    if (!seen.has(kod)) {
+      seen.add(kod);
+      uniqNewItems.push(item);
     }
+  }
+
+  // degisenler3: eski + yeni değerleri birlikte döndürelim
+  const degisenler3 = uniqNewItems.map(newItem => {
+    const kod = newItem.kurulus_kodu;
+
+    const oldItem = dbData.find(dbItem => dbItem.kurulus_kodu === kod) || {};
 
     return {
-        degisenler1,
-        degisenler2,
-        degisenler3
+      kurulus_kodu: kod,
+
+      // yeni
+      kurulus_adi: newItem.kurulus_adi,
+      yetkiler: newItem.yetkiler || [],
+
+      // eski (db'den)
+      kurulus_adi_eski: oldItem.kurulus_adi ?? null,
+      yetkiler_eski: oldItem.yetkiler || []
     };
+  });
+
+  return {
+    degisenler1,
+    degisenler2,
+    degisenler3
+  };
 }
+
 
 
 // =====================
@@ -332,3 +353,4 @@ export default async ({ req, res, log, error }) => {
         });
     }
 };
+
