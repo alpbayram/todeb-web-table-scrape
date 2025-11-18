@@ -269,54 +269,57 @@ async function syncDbWithNewData(databases, dbData, newData, removed) {
 //
 // Şimdilik html'i basit tutuyoruz; sonra gerçek template'e çevirirsin.
 
-async function sendReportMail({ html }) {
-    await fetch(MAIL_FUNCTION_URL, {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-            to: "alp.bayram@todeb.org.tr",
-            subject: "WebWatcher Güncelleme Raporu",
-            html
-        })
-    });
+async function sendReportMail({ meta, added, removed, changed }) {
+  await fetch(MAIL_FUNCTION_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      to: "alp.bayram@todeb.org.tr",
+      subject: "WebWatcher Güncelleme Raporu",
+      meta,
+      added,
+      removed,
+      changed
+    })
+  });
 }
+
 
 // =====================
 //  ANA ÇALIŞTIRMA
 // =====================
-
 async function run(distillPayload) {
     const { databases } = createClient();
 
-    const dbData = await getDbData(databases); // oldData
+    // oldData
+    const dbData = await getDbData(databases);
 
-    const { meta, newData } = mapDistillToNewData(distillPayload); // newData
+    // distillPayload → { meta, newData }
+    const { meta, newData } = mapDistillToNewData(distillPayload);
 
+    // karşılaştırmalar
     const { added, removed } = compareKuruluslar(dbData, newData);
     const commonKuruluslar = getCommonKuruluslar(dbData, newData);
     const { degisenler3 } = kontrolEt(commonKuruluslar, dbData);
 
-    // Şimdilik html = JSON dump, sadece deneme amaçlı
-    const html = `
-    <h1>${meta.name}</h1>
-    <p><a href="${meta.uri}">${meta.uri}</a></p>
-    <pre>${JSON.stringify(
-        {
-            added,
-            removed,
-            changed: degisenler3
-        },
-        null,
-        2
-    )}</pre>
-  `;
+    // ---------------------------
+    // MAIL FUNCTION'A GİDEN FORMAT
+    // ---------------------------
+    await sendReportMail({
+        meta,
+        added,
+        removed,
+        changed: degisenler3
+    });
 
-    await sendReportMail({ html });
-
+    // ---------------------------
+    // DB'yi güncelle
+    // ---------------------------
     await syncDbWithNewData(databases, dbData, newData, removed);
 
+    // Debug return (Appwrite logs)
     return {
         meta,
         added,
@@ -324,6 +327,7 @@ async function run(distillPayload) {
         changed: degisenler3
     };
 }
+
 
 // =====================
 //  APPWRITE FUNCTION HANDLER
@@ -353,4 +357,5 @@ export default async ({ req, res, log, error }) => {
         });
     }
 };
+
 
