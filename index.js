@@ -1,5 +1,4 @@
 import { Client, Databases, ID } from "node-appwrite";
-import * as cheerio from "cheerio";
 
 // =====================
 //  CONFIG (.env'den)
@@ -10,9 +9,6 @@ const APPWRITE_PROJECT_ID = process.env.APPWRITE_PROJECT_ID;
 const APPWRITE_API_KEY = process.env.APPWRITE_API_KEY;
 const APPWRITE_DATABASE_ID = process.env.DATABASE_ID;
 const APPWRITE_COLLECTION_ID = process.env.COLLECTION_ID;
-
-// Web’den veri çekilecek URL
-const WEB_URL = "https://www.tcmb.gov.tr/wps/wcm/connect/tr/tcmb+tr/main+menu/temel+faaliyetler/odeme+hizmetleri/odeme+kuruluslari";
 
 // Mail atan Appwrite Function endpoint’in
 const MAIL_FUNCTION_URL = "https://6909b832001efa359c90.fra.appwrite.run";
@@ -37,67 +33,49 @@ function createClient() {
 // =====================
 
 async function getDbData(databases) {
-    const response = await databases.listDocuments(
-        APPWRITE_DATABASE_ID,
-        APPWRITE_COLLECTION_ID
-    );
+  const response = await databases.listDocuments(
+    APPWRITE_DATABASE_ID,
+    APPWRITE_COLLECTION_ID
+  );
 
-    const dbData = response.documents.map(doc => ({
-        docId: doc.$id,                // 🔴 BURASI YENİ
-        kurulus_kodu: doc.kurulus_kodu,
-        kurulus_adi: doc.kurulus_adi,
-        yetkiler: doc.yetkiler
-    }));
+  const dbData = response.documents.map(doc => ({
+    docId: doc.$id,
+    kurulus_kodu: doc.kurulus_kodu,
+    kurulus_adi: doc.kurulus_adi,
+    yetkiler: doc.yetkiler || []
+  }));
 
-    return dbData;
+  return dbData;
 }
 
-
 // =====================
-//  WEB'DEN VERİ ÇEK (newData)
+//  DISTILL PAYLOAD → newData
 // =====================
+//
+// Distill body örneği:
+// {
+//   id, name, uri,
+//   text: "[ { \"code\": \"898\", \"name\": \"...\", \"rights\": [\"a\", ...] }, ... ]"
+// }
 
-async function getNewDataFromWeb() {
-    const res = await fetch(WEB_URL);
-    const html = await res.text();
-    const $ = cheerio.load(html);
+function mapDistillToNewData(distillPayload) {
+  const { id, name, uri, text } = distillPayload;
 
-    const newData = [];
-    const harfler = ["a", "b", "c", "ç", "d", "e", "f", "g"];
+  // text içindeki JSON string'i parse et
+  const arr = JSON.parse(text);
 
-    $("tbody > tr").slice(2).each((_, tr) => {
-        const tds = $(tr).find("td");
-        if (tds.length < 3) return;
+  const newData = arr.map(item => ({
+    kurulus_kodu: String(item.code).trim(),
+    kurulus_adi: String(item.name).trim(),
+    yetkiler: Array.isArray(item.rights) ? item.rights : []
+  }));
 
-        const kurulus_kodu = $(tds[1]).text().trim();
-        let kurulus_adi = $(tds[2]).text().trim();
-        kurulus_adi = kurulus_adi.replace(/\s+/g, " ");
-
-        const yetkiler = [];
-
-        for (let i = 0; i < harfler.length; i++) {
-            const cellIndex = 3 + i;
-            if (cellIndex >= tds.length) break;
-
-            let cellText = $(tds[cellIndex]).text();
-            cellText = cellText.replace(/\u00a0/g, "").trim();
-
-            if (cellText !== "") {
-                yetkiler.push(harfler[i]);
-            }
-        }
-
-        if (kurulus_kodu) {
-            newData.push({
-                kurulus_kodu,
-                kurulus_adi,
-                yetkiler
-            });
-        }
-    });
-
-    return newData;
+  return {
+    meta: { id, name, uri },
+    newData
+  };
 }
+
 // =====================
 //  KARŞILAŞTIRMA FONKSİYONLARI
 // =====================
@@ -128,14 +106,12 @@ function getCommonKuruluslar(oldData, newData) {
 
   const commonCodes = oldCodes.filter(code => newCodesSet.has(code));
 
-  // 🔴 ÖNEMLİ: Ortakları newData'dan alıyoruz (yeni snapshot)
-  const commonKuruluslar = newData.filter(item => {
+  const commonKuruluslar = oldData.filter(item => {
     return commonCodes.includes(item.kurulus_kodu);
   });
 
   return commonKuruluslar;
 }
-
 
 function findChangedKuruluslar(commonKuruluslar, dbData) {
   const degisenler = [];
@@ -168,12 +144,12 @@ function findChangedYetkiler(commonKuruluslar, dbData) {
     const item = commonKuruluslar[i];
 
     const kod = item.kurulus_kodu;
-    const yeniYetkiler = item.yetkiler;
+    const yeniYetkiler = item.yetkiler || [];
 
     const dbRow = dbData.find(dbItem => dbItem.kurulus_kodu === kod);
     if (!dbRow) continue;
 
-    const eskiYetkiler = dbRow.yetkiler;
+    const eskiYetkiler = dbRow.yetkiler || [];
 
     const yetkiDegistiMi =
       eskiYetkiler.length !== yeniYetkiler.length ||
@@ -210,371 +186,73 @@ function kontrolEt(commonKuruluslar, dbData) {
   return {
     degisenler1,
     degisenler2,
-    degisenler3,
+    degisenler3
   };
 }
 
+// =====================
+//  DB'Yİ newData İLE SENKRONLA
+// =====================
+
 async function syncDbWithNewData(databases, dbData, newData, removed) {
-    const dbDataByCode = new Map(
-        dbData.map(item => [item.kurulus_kodu, item])
-    );
+  const dbDataByCode = new Map(dbData.map(item => [item.kurulus_kodu, item]));
 
-    // 1) Removed olanları sil
-    for (let i = 0; i < removed.length; i++) {
-        const item = removed[i];
-        const existing = dbDataByCode.get(item.kurulus_kodu);
+  // 1) Removed olanları sil
+  for (let i = 0; i < removed.length; i++) {
+    const item = removed[i];
+    const existing = dbDataByCode.get(item.kurulus_kodu);
 
-        if (existing && existing.docId) {
-            await databases.deleteDocument(
-                APPWRITE_DATABASE_ID,
-                APPWRITE_COLLECTION_ID,
-                existing.docId
-            );
-        }
+    if (existing && existing.docId) {
+      await databases.deleteDocument(
+        APPWRITE_DATABASE_ID,
+        APPWRITE_COLLECTION_ID,
+        existing.docId
+      );
     }
-
-    // 2) newData'yı DB'ye yaz (varsa update, yoksa create)
-    for (let i = 0; i < newData.length; i++) {
-        const item = newData[i];
-        const existing = dbDataByCode.get(item.kurulus_kodu);
-
-        const payload = {
-            kurulus_kodu: item.kurulus_kodu,
-            kurulus_adi: item.kurulus_adi,
-            yetkiler: item.yetkiler
-        };
-
-        if (existing && existing.docId) {
-            await databases.updateDocument(
-                APPWRITE_DATABASE_ID,
-                APPWRITE_COLLECTION_ID,
-                existing.docId,
-                payload
-            );
-        } else {
-            await databases.createDocument(
-                APPWRITE_DATABASE_ID,
-                APPWRITE_COLLECTION_ID,
-                ID.unique(),
-                payload
-            );
-        }
-    }
-}
-
-
-
-
-function escapeHtml(str) {
-  return String(str || "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
-}
-
-function renderRows(items) {
-  if (!items || items.length === 0) {
-    return `
-      <tr>
-        <td style="padding:8px;border-top:1px solid #d4d4d4;" colspan="3">
-          Kayıt bulunamadı.
-        </td>
-      </tr>
-    `;
   }
 
-  return items
-    .map(item => {
-      const yetkiText =
-        item.yetkiler && item.yetkiler.length
-          ? item.yetkiler.join(", ")
-          : "-";
+  // 2) newData'yı DB'ye yaz (varsa update, yoksa create)
+  for (let i = 0; i < newData.length; i++) {
+    const item = newData[i];
+    const existing = dbDataByCode.get(item.kurulus_kodu);
 
-      return `
-        <tr>
-          <td style="padding:8px;border-top:1px solid #d4d4d4;">${escapeHtml(
-            item.kurulus_kodu
-          )}</td>
-          <td style="padding:8px;border-top:1px solid #d4d4d4;">${escapeHtml(
-            item.kurulus_adi
-          )}</td>
-          <td style="padding:8px;border-top:1px solid #d4d4d4;">${escapeHtml(
-            yetkiText
-          )}</td>
-        </tr>
-      `;
-    })
-    .join("");
+    const payload = {
+      kurulus_kodu: item.kurulus_kodu,
+      kurulus_adi: item.kurulus_adi,
+      yetkiler: item.yetkiler
+    };
+
+    if (existing && existing.docId) {
+      await databases.updateDocument(
+        APPWRITE_DATABASE_ID,
+        APPWRITE_COLLECTION_ID,
+        existing.docId,
+        payload
+      );
+    } else {
+      await databases.createDocument(
+        APPWRITE_DATABASE_ID,
+        APPWRITE_COLLECTION_ID,
+        ID.unique(),
+        payload
+      );
+    }
+  }
 }
-
-function buildEmailHtml(added, removed, changed) {
-  const addedRows = renderRows(added);
-  const removedRows = renderRows(removed);
-  const changedRows = renderRows(changed);
-
-  const today = new Date().toLocaleDateString("tr-TR");
-
-  return `
-<!DOCTYPE html>
-<html>
-  <head>
-    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Yeni Değişiklikler</title>
-  </head>
-  <body
-    style="margin:0;padding:0;background-color:#ffffff;font-family:Arial,Helvetica,sans-serif;"
-  >
-    <table
-      width="100%"
-      cellpadding="0"
-      cellspacing="0"
-      border="0"
-      style="background-color:#ffffff;"
-    >
-      <tr>
-        <td align="center">
-          <table
-            width="600"
-            cellpadding="0"
-            cellspacing="0"
-            border="0"
-            style="width:600px;max-width:600px;border:1px solid #d4d4d4;background-color:#ffffff;"
-          >
-            <!-- Header -->
-            <tr>
-              <td
-                align="center"
-                style="background-color:#d4d4d4;padding:16px 0 12px 0;"
-              >
-                <img
-                  src="https://raw.githubusercontent.com/alpbayram/todeb-mail/refs/heads/main/TODEB_Logo.png"
-                  alt="TODEB Logo"
-                  width="280"
-                  height="auto"
-                  style="display:block;border:none;outline:none;text-decoration:none;"
-                />
-              </td>
-            </tr>
-            <tr>
-              <td
-                align="center"
-                style="background-color:#d4d4d4;padding:8px 24px 12px 24px;"
-              >
-                <h1
-                  style="margin:0;font-size:24px;font-weight:bold;color:#000000;"
-                >
-                  Yeni Değişiklikler
-                </h1>
-                <p
-                  style="margin:8px 0 0 0;font-size:14px;color:#333333;font-weight:bold;"
-                >
-                  Son güncellemeler aşağıda listelenmiştir.
-                </p>
-              </td>
-            </tr>
-
-            <!-- Spacer -->
-            <tr><td height="24" style="font-size:0;line-height:0;">&nbsp;</td></tr>
-
-            <!-- YENİ EKLENENLER -->
-            <tr>
-              <td style="padding:0 24px 16px 24px;">
-                <table width="100%" cellpadding="0" cellspacing="0" border="0">
-                  <tr>
-                    <td
-                      style="font-size:18px;font-weight:bold;color:#000000;padding-bottom:8px;"
-                    >
-                      Yeni Eklenenler
-                    </td>
-                  </tr>
-                  <tr>
-                    <td
-                      style="border:1px solid #d4d4d4;padding:0;font-size:14px;color:#405464;"
-                    >
-                      <table
-                        width="100%"
-                        cellpadding="0"
-                        cellspacing="0"
-                        border="0"
-                        style="border-collapse:collapse;"
-                      >
-                        <thead>
-                          <tr>
-                            <th
-                              align="left"
-                              style="padding:8px;border-bottom:1px solid #d4d4d4;font-size:13px;font-weight:bold;background-color:#f5f5f5;"
-                            >
-                              Kuruluş Kodu
-                            </th>
-                            <th
-                              align="left"
-                              style="padding:8px;border-bottom:1px solid #d4d4d4;font-size:13px;font-weight:bold;background-color:#f5f5f5;"
-                            >
-                              Kuruluş Adı
-                            </th>
-                            <th
-                              align="left"
-                              style="padding:8px;border-bottom:1px solid #d4d4d4;font-size:13px;font-weight:bold;background-color:#f5f5f5;"
-                            >
-                              Yetkileri
-                            </th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          ${addedRows}
-                        </tbody>
-                      </table>
-                    </td>
-                  </tr>
-                </table>
-              </td>
-            </tr>
-
-            <!-- SİLİNENLER -->
-            <tr>
-              <td style="padding:0 24px 16px 24px;">
-                <table width="100%" cellpadding="0" cellspacing="0" border="0">
-                  <tr>
-                    <td
-                      style="font-size:18px;font-weight:bold;color:#000000;padding-bottom:8px;"
-                    >
-                      Silinenler
-                    </td>
-                  </tr>
-                  <tr>
-                    <td
-                      style="border:1px solid #d4d4d4;padding:0;font-size:14px;color:#405464;"
-                    >
-                      <table
-                        width="100%"
-                        cellpadding="0"
-                        cellspacing="0"
-                        border="0"
-                        style="border-collapse:collapse;"
-                      >
-                        <thead>
-                          <tr>
-                            <th
-                              align="left"
-                              style="padding:8px;border-bottom:1px solid #d4d4d4;font-size:13px;font-weight:bold;background-color:#f5f5f5;"
-                            >
-                              Kuruluş Kodu
-                            </th>
-                            <th
-                              align="left"
-                              style="padding:8px;border-bottom:1px solid #d4d4d4;font-size:13px;font-weight:bold;background-color:#f5f5f5;"
-                            >
-                              Kuruluş Adı
-                            </th>
-                            <th
-                              align="left"
-                              style="padding:8px;border-bottom:1px solid #d4d4d4;font-size:13px;font-weight:bold;background-color:#f5f5f5;"
-                            >
-                              Yetkileri
-                            </th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          ${removedRows}
-                        </tbody>
-                      </table>
-                    </td>
-                  </tr>
-                </table>
-              </td>
-            </tr>
-
-            <!-- DEĞİŞENLER -->
-            <tr>
-              <td style="padding:0 24px 24px 24px;">
-                <table width="100%" cellpadding="0" cellspacing="0" border="0">
-                  <tr>
-                    <td
-                      style="font-size:18px;font-weight:bold;color:#000000;padding-bottom:8px;"
-                    >
-                      Değişenler
-                    </td>
-                  </tr>
-                  <tr>
-                    <td
-                      style="border:1px solid #d4d4d4;padding:0;font-size:14px;color:#405464;"
-                    >
-                      <table
-                        width="100%"
-                        cellpadding="0"
-                        cellspacing="0"
-                        border="0"
-                        style="border-collapse:collapse;"
-                      >
-                        <thead>
-                          <tr>
-                            <th
-                              align="left"
-                              style="padding:8px;border-bottom:1px solid #d4d4d4;font-size:13px;font-weight:bold;background-color:#f5f5f5;"
-                            >
-                              Kuruluş Kodu
-                            </th>
-                            <th
-                              align="left"
-                              style="padding:8px;border-bottom:1px solid #d4d4d4;font-size:13px;font-weight:bold;background-color:#f5f5f5;"
-                            >
-                              Kuruluş Adı
-                            </th>
-                            <th
-                              align="left"
-                              style="padding:8px;border-bottom:1px solid #d4d4d4;font-size:13px;font-weight:bold;background-color:#f5f5f5;"
-                            >
-                              Yetkileri
-                            </th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          ${changedRows}
-                        </tbody>
-                      </table>
-                    </td>
-                  </tr>
-                </table>
-              </td>
-            </tr>
-
-            <!-- Footer -->
-            <tr>
-              <td
-                align="center"
-                style="background-color:#f0f0f0;padding:12px;font-size:12px;color:#666666;"
-              >
-              WebWatcher Otomatik Bildirim • ${today}
-              </td>
-            </tr>
-          </table>
-        </td>
-      </tr>
-    </table>
-  </body>
-</html>`;
-}
-
 
 // =====================
 //  MAIL FUNCTION ÇAĞIRMA
 // =====================
+//
+// Şimdilik html'i basit tutuyoruz; sonra gerçek template'e çevirirsin.
 
-async function sendReportMail({ added, removed, changed }) {
-  const html = buildEmailHtml(added, removed, changed);
-
+async function sendReportMail({ html }) {
   await fetch(MAIL_FUNCTION_URL, {
     method: "POST",
     headers: {
       "Content-Type": "application/json"
     },
     body: JSON.stringify({
-      added,
-      removed,
-      changed,
       to: "alp.bayram@todeb.org.tr",
       subject: "WebWatcher Güncelleme Raporu",
       html
@@ -582,32 +260,45 @@ async function sendReportMail({ added, removed, changed }) {
   });
 }
 
-
 // =====================
 //  ANA ÇALIŞTIRMA
 // =====================
 
-async function run() {
+async function run(distillPayload) {
   const { databases } = createClient();
 
-  const dbData = await getDbData(databases);      // oldData
-  const newData = await getNewDataFromWeb();      // newData (web tablosu)
+  const dbData = await getDbData(databases); // oldData
+
+  const { meta, newData } = mapDistillToNewData(distillPayload); // newData
 
   const { added, removed } = compareKuruluslar(dbData, newData);
-  log(removed);
   const commonKuruluslar = getCommonKuruluslar(dbData, newData);
   const { degisenler3 } = kontrolEt(commonKuruluslar, dbData);
-await syncDbWithNewData(databases, dbData, newData, removed);
-  await sendReportMail({
-    added,
-    removed,
-    changed: degisenler3,
-  });
-  
+
+  // Şimdilik html = JSON dump, sadece deneme amaçlı
+  const html = `
+    <h1>${meta.name}</h1>
+    <p><a href="${meta.uri}">${meta.uri}</a></p>
+    <pre>${JSON.stringify(
+      {
+        added,
+        removed,
+        changed: degisenler3
+      },
+      null,
+      2
+    )}</pre>
+  `;
+
+  await sendReportMail({ html });
+
+  await syncDbWithNewData(databases, dbData, newData, removed);
+
   return {
+    meta,
     added,
     removed,
-    changed: degisenler3,
+    changed: degisenler3
   };
 }
 
@@ -617,7 +308,10 @@ await syncDbWithNewData(databases, dbData, newData, removed);
 
 export default async ({ req, res, log, error }) => {
   try {
-    const result = await run();
+    const body =
+      typeof req.body === "string" ? JSON.parse(req.body) : req.body ?? {};
+
+    const result = await run(body);
 
     return res.json({
       success: true,
@@ -636,14 +330,3 @@ export default async ({ req, res, log, error }) => {
     });
   }
 };
-
-
-
-
-
-
-
-
-
-
-
