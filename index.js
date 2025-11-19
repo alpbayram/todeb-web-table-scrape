@@ -285,7 +285,7 @@ async function sendReportMail({ meta, added, removed, changed }) {
     },
     body: JSON.stringify({
       to: "alp.bayram@todeb.org.tr",
-      subject: "WebWatcher Güncelleme Raporu",
+      subject: "Güncelleme Raporu",
       meta,
       added,
       removed,
@@ -365,6 +365,7 @@ export default async ({ req, res, log, error }) => {
         });
     }
 };
+
 
 
 
