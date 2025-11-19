@@ -284,7 +284,7 @@ async function sendReportMail({ meta, added, removed, changed }) {
       "Content-Type": "application/json"
     },
     body: JSON.stringify({
-      to: "alp.bayram@todeb.org.tr,kemal.pehlivan@todeb.org.tr",
+      to: "alp.bayram@todeb.org.tr,suhendan.enisel@todeb.org.tr,asli.arslan@todeb.org.tr,fatih.kaya@todeb.org.tr,sektor@todeb.org.tr",
       subject: "Güncelleme Raporu",
       meta,
       added,
@@ -365,6 +365,7 @@ export default async ({ req, res, log, error }) => {
         });
     }
 };
+
 
 
 
