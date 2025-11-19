@@ -59,7 +59,7 @@ async function getDbData(databases) {
 // }
 
 function mapDistillToNewData(distillPayload) {
-    const { id, name, uri, text } = distillPayload;
+    const { id, name, uri, text, ts } = distillPayload;
 
     // text içindeki JSON string'i parse et
     const arr = JSON.parse(text);
@@ -69,9 +69,17 @@ function mapDistillToNewData(distillPayload) {
         kurulus_adi: String(item.name).trim(),
         yetkiler: Array.isArray(item.rights) ? item.rights : []
     }));
-
+    const trDate = new Date(ts).toLocaleString("tr-TR", {
+    timeZone: "Europe/Istanbul",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit"
+});
     return {
-        meta: { id, name, uri },
+        meta: { id, name, uri, trDate },
         newData
     };
 }
@@ -357,5 +365,6 @@ export default async ({ req, res, log, error }) => {
         });
     }
 };
+
 
 
