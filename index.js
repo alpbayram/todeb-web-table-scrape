@@ -225,7 +225,7 @@ function kontrolEt(commonKuruluslar, dbData) {
 //  DB'Yİ newData İLE SENKRONLA
 // =====================
 
-async function syncDbWithNewData(databases, dbData, newData, removed) {
+async function syncDbWithNewData(databases, dbData, newData, removed, dbCollection) {
     const dbDataByCode = new Map(dbData.map(item => [item.kurulus_kodu, item]));
 
     // 1) Removed olanları sil
@@ -236,7 +236,7 @@ async function syncDbWithNewData(databases, dbData, newData, removed) {
         if (existing && existing.docId) {
             await databases.deleteDocument(
                 APPWRITE_DATABASE_ID,
-                APPWRITE_COLLECTION_ID,
+                dbCollection,
                 existing.docId
             );
         }
@@ -256,14 +256,14 @@ async function syncDbWithNewData(databases, dbData, newData, removed) {
         if (existing && existing.docId) {
             await databases.updateDocument(
                 APPWRITE_DATABASE_ID,
-                APPWRITE_COLLECTION_ID,
+                dbCollection,
                 existing.docId,
                 payload
             );
         } else {
             await databases.createDocument(
                 APPWRITE_DATABASE_ID,
-                APPWRITE_COLLECTION_ID,
+                dbCollection,
                 ID.unique(),
                 payload
             );
@@ -329,7 +329,7 @@ async function run(distillPayload) {
     // ---------------------------
     // DB'yi güncelle
     // ---------------------------
-    await syncDbWithNewData(databases, dbData, newData, removed);
+    await syncDbWithNewData(databases, dbData, newData, removed, meta.dbCollection);
 
     // Debug return (Appwrite logs)
     return {
