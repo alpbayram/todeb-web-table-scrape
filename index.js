@@ -32,10 +32,10 @@ function createClient() {
 //  DB'DEN VERİ ÇEK (oldData)
 // =====================
 
-async function getDbData(databases) {
+async function getDbData(databases, dbCollection) {
     const response = await databases.listDocuments(
         APPWRITE_DATABASE_ID,
-        APPWRITE_COLLECTION_ID
+        dbCollection
     );
 
     const dbData = response.documents.map(doc => ({
@@ -59,7 +59,7 @@ async function getDbData(databases) {
 // }
 
 function mapDistillToNewData(distillPayload) {
-    const { id, name, uri, text, ts, to } = distillPayload;
+    const { id, name, uri, text, ts, to, dbCollection } = distillPayload;
 
     // text içindeki JSON string'i parse et
     const arr = JSON.parse(text);
@@ -70,16 +70,16 @@ function mapDistillToNewData(distillPayload) {
         yetkiler: Array.isArray(item.rights) ? item.rights : []
     }));
     const trDate = new Date(ts).toLocaleString("tr-TR", {
-    timeZone: "Europe/Istanbul",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit"
-});
+        timeZone: "Europe/Istanbul",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit"
+    });
     return {
-        meta: { id, name, uri, trDate, to },
+        meta: { id, name, uri, trDate, to, dbCollection },
         newData
     };
 }
@@ -174,49 +174,49 @@ function findChangedYetkiler(commonKuruluslar, dbData) {
 
 
 function kontrolEt(commonKuruluslar, dbData) {
-  const degisenler1 = findChangedKuruluslar(commonKuruluslar, dbData);
-  const degisenler2 = findChangedYetkiler(commonKuruluslar, dbData);
+    const degisenler1 = findChangedKuruluslar(commonKuruluslar, dbData);
+    const degisenler2 = findChangedYetkiler(commonKuruluslar, dbData);
 
-  // degisenler1 + degisenler2 içindeki NEW data nesnelerini uniq hale getir
-  const tumDegisenler = [...degisenler1, ...degisenler2];
+    // degisenler1 + degisenler2 içindeki NEW data nesnelerini uniq hale getir
+    const tumDegisenler = [...degisenler1, ...degisenler2];
 
-  const uniqNewItems = [];
-  const seen = new Set();
+    const uniqNewItems = [];
+    const seen = new Set();
 
-  for (let i = 0; i < tumDegisenler.length; i++) {
-    const item = tumDegisenler[i];
-    const kod = item.kurulus_kodu;
+    for (let i = 0; i < tumDegisenler.length; i++) {
+        const item = tumDegisenler[i];
+        const kod = item.kurulus_kodu;
 
-    if (!seen.has(kod)) {
-      seen.add(kod);
-      uniqNewItems.push(item);
+        if (!seen.has(kod)) {
+            seen.add(kod);
+            uniqNewItems.push(item);
+        }
     }
-  }
 
-  // degisenler3: eski + yeni değerleri birlikte döndürelim
-  const degisenler3 = uniqNewItems.map(newItem => {
-    const kod = newItem.kurulus_kodu;
+    // degisenler3: eski + yeni değerleri birlikte döndürelim
+    const degisenler3 = uniqNewItems.map(newItem => {
+        const kod = newItem.kurulus_kodu;
 
-    const oldItem = dbData.find(dbItem => dbItem.kurulus_kodu === kod) || {};
+        const oldItem = dbData.find(dbItem => dbItem.kurulus_kodu === kod) || {};
+
+        return {
+            kurulus_kodu: kod,
+
+            // yeni
+            kurulus_adi: newItem.kurulus_adi,
+            yetkiler: newItem.yetkiler || [],
+
+            // eski (db'den)
+            kurulus_adi_eski: oldItem.kurulus_adi ?? null,
+            yetkiler_eski: oldItem.yetkiler || []
+        };
+    });
 
     return {
-      kurulus_kodu: kod,
-
-      // yeni
-      kurulus_adi: newItem.kurulus_adi,
-      yetkiler: newItem.yetkiler || [],
-
-      // eski (db'den)
-      kurulus_adi_eski: oldItem.kurulus_adi ?? null,
-      yetkiler_eski: oldItem.yetkiler || []
+        degisenler1,
+        degisenler2,
+        degisenler3
     };
-  });
-
-  return {
-    degisenler1,
-    degisenler2,
-    degisenler3
-  };
 }
 
 
@@ -278,20 +278,20 @@ async function syncDbWithNewData(databases, dbData, newData, removed) {
 // Şimdilik html'i basit tutuyoruz; sonra gerçek template'e çevirirsin.
 
 async function sendReportMail({ meta, added, removed, changed }) {
-  await fetch(MAIL_FUNCTION_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      to: meta.to,
-      subject: "Güncelleme Raporu",
-      meta,
-      added,
-      removed,
-      changed
-    })
-  });
+    await fetch(MAIL_FUNCTION_URL, {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+            to: meta.to,
+            subject: "Güncelleme Raporu",
+            meta,
+            added,
+            removed,
+            changed
+        })
+    });
 }
 
 
@@ -299,13 +299,17 @@ async function sendReportMail({ meta, added, removed, changed }) {
 //  ANA ÇALIŞTIRMA
 // =====================
 async function run(distillPayload) {
+    // distillPayload → { meta, newData }
+    const { meta, newData } = mapDistillToNewData(distillPayload);
+
+
     const { databases } = createClient();
 
     // oldData
-    const dbData = await getDbData(databases);
+    const dbData = await getDbData(databases, meta.dbCollection);
 
-    // distillPayload → { meta, newData }
-    const { meta, newData } = mapDistillToNewData(distillPayload);
+
+
 
     // karşılaştırmalar
     const { added, removed } = compareKuruluslar(dbData, newData);
@@ -365,6 +369,7 @@ export default async ({ req, res, log, error }) => {
         });
     }
 };
+
 
 
 
