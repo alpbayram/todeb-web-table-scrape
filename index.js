@@ -59,7 +59,7 @@ async function getDbData(databases) {
 // }
 
 function mapDistillToNewData(distillPayload) {
-    const { id, name, uri, text, ts } = distillPayload;
+    const { id, name, uri, text, ts, to } = distillPayload;
 
     // text içindeki JSON string'i parse et
     const arr = JSON.parse(text);
@@ -79,7 +79,7 @@ function mapDistillToNewData(distillPayload) {
     second: "2-digit"
 });
     return {
-        meta: { id, name, uri, trDate },
+        meta: { id, name, uri, trDate, to },
         newData
     };
 }
@@ -284,7 +284,7 @@ async function sendReportMail({ meta, added, removed, changed }) {
       "Content-Type": "application/json"
     },
     body: JSON.stringify({
-      to: "alp.bayram@todeb.org.tr,suhendan.enisel@todeb.org.tr,asli.arslan@todeb.org.tr,fatih.kaya@todeb.org.tr,sektor@todeb.org.tr",
+      to: meta.to,
       subject: "Güncelleme Raporu",
       meta,
       added,
@@ -365,6 +365,7 @@ export default async ({ req, res, log, error }) => {
         });
     }
 };
+
 
 
 
