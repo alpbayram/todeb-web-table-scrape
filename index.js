@@ -238,17 +238,14 @@ const WATCHERS = {
     // TODEB Duyuru Listesi (sadece title)
     // ------------------------------------------------
     "tcmb_odeme_sistemleri_ile_ilgili_mevzuat": {
-
-        // Distill JSON → newData
         parseNewData(distillPayload) {
             const { id, name, uri, text, ts, to, dbCollection } = distillPayload;
 
-            const arr = JSON.parse(text);
+            const arr = JSON.parse(text); // distill text: [{ title: "..." }, ...]
 
-            // title listesi
             const newData = arr.map(item => ({
-                title: String(item.title || "").trim()
-            }));
+                title: String(item.title).trim()
+            })).filter(x => x.title); // boşları at
 
             const trDate = ts
                 ? new Date(ts).toLocaleString("tr-TR", {
@@ -268,7 +265,6 @@ const WATCHERS = {
             };
         },
 
-        // DB'den eski kayıtları oku
         async getOldData(databases, meta) {
             const limit = 100;
             let offset = 0;
@@ -279,19 +275,13 @@ const WATCHERS = {
                 const page = await databases.listDocuments(
                     APPWRITE_DATABASE_ID,
                     meta.dbCollection,
-                    [
-                        Query.limit(limit),
-                        Query.offset(offset)
-                    ]
+                    [Query.limit(limit), Query.offset(offset)]
                 );
 
                 allDocs = allDocs.concat(page.documents);
 
-                if (page.documents.length < limit) {
-                    keepGoing = false;
-                } else {
-                    offset += limit;
-                }
+                if (page.documents.length < limit) keepGoing = false;
+                else offset += limit;
             }
 
             return allDocs.map(doc => ({
@@ -300,28 +290,20 @@ const WATCHERS = {
             }));
         },
 
-        // Added / Removed / Changed
         compare(oldData, newData) {
-            const oldTitles = new Set(oldData.map(x => x.title));
-            const newTitles = new Set(newData.map(x => x.title));
+            const oldTitles = new Set(oldData.map(i => i.title));
+            const newTitles = new Set(newData.map(i => i.title));
 
-            // added = newData'da olup oldData'da olmayan
-            const added = newData.filter(x => !oldTitles.has(x.title));
+            const added = newData.filter(i => !oldTitles.has(i.title));
+            const removed = oldData.filter(i => !newTitles.has(i.title));
 
-            // removed = oldData'da olup newData'da olmayan
-            const removed = oldData.filter(x => !newTitles.has(x.title));
-
-            // changed = title’da kelime değişimi? → Mantıken title uniq olduğu için:
-            // burada değişim yok, çünkü title tek alandır.
-            const changed = [];
+            const changed = []; // title-only watcher’da changed yok
 
             return { added, removed, changed };
         },
 
-        // DB senkronizasyonu
         async syncDb(databases, oldData, newData, removed, meta) {
-
-            const oldMap = new Map(oldData.map(x => [x.title, x]));
+            const oldMap = new Map(oldData.map(i => [i.title, i]));
 
             // removed sil
             for (let i = 0; i < removed.length; i++) {
@@ -337,63 +319,22 @@ const WATCHERS = {
                 }
             }
 
-            // newData'yı yaz
+            // sadece added create
             for (let i = 0; i < newData.length; i++) {
                 const item = newData[i];
                 const existing = oldMap.get(item.title);
 
-                const payload = { title: item.title };
-
-                if (existing?.docId) {
-                    await databases.updateDocument(
-                        APPWRITE_DATABASE_ID,
-                        meta.dbCollection,
-                        existing.docId,
-                        payload
-                    );
-                } else {
+                if (!existing) {
                     await databases.createDocument(
                         APPWRITE_DATABASE_ID,
                         meta.dbCollection,
                         ID.unique(),
-                        payload
+                        { title: item.title }
                     );
                 }
             }
         }
     }
-
-};
-
-// =====================
-//  ANA MOTOR
-// =====================
-
-async function run(distillPayload) {
-    const watcher = WATCHERS[distillPayload.id];
-
-    if (!watcher) {
-        throw new Error(`Bu Distill ID için watcher tanımlı değil: ${distillPayload.id}`);
-    }
-
-    const { databases } = createClient();
-
-    // 1) payload -> meta + newData
-    const { meta, newData } = watcher.parseNewData(distillPayload);
-
-    // 2) DB -> oldData (watcher bilir)
-    const oldData = await watcher.getOldData(databases, meta);
-
-    // 3) compare (watcher bilir)
-    const { added, removed, changed } = watcher.compare(oldData, newData);
-
-    // 4) mail gönder
-    await sendReportMail({ meta, added, removed, changed });
-
-    // 5) DB sync (watcher bilir)
-    await watcher.syncDb(databases, oldData, newData, removed, meta);
-
-    return { meta, added, removed, changed };
 }
 
 // =====================
@@ -421,3 +362,4 @@ export default async ({ req, res, log, error }) => {
         });
     }
 };
+
