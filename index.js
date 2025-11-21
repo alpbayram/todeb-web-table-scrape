@@ -33,12 +33,13 @@ function createClient() {
 // =====================
 
 async function getDbData(databases, dbCollection) {
-    const allDocs = [];
+    const limit = 100;
     let offset = 0;
-    const limit = 100; // güvenli büyük bir sayı
+    let allDocs = [];
+    let keepGoing = true;
 
-    while (true) {
-        const response = await databases.listDocuments(
+    while (keepGoing) {
+        const page = await databases.listDocuments(
             APPWRITE_DATABASE_ID,
             dbCollection,
             [
@@ -47,15 +48,15 @@ async function getDbData(databases, dbCollection) {
             ]
         );
 
-        allDocs.push(...response.documents);
+        allDocs = allDocs.concat(page.documents);
 
-        if (response.documents.length < limit) {
-            break; // son sayfaya geldik
+        // eğer bu sayfa limitten küçük geldiyse, son sayfadır
+        if (page.documents.length < limit) {
+            keepGoing = false;
+        } else {
+            offset = offset + limit; // bir sonraki sayfaya geç
         }
-
-        offset += limit;
     }
-
     const dbData = allDocs.map(doc => ({
         docId: doc.$id,
         kurulus_kodu: doc.kurulus_kodu,
@@ -387,6 +388,7 @@ export default async ({ req, res, log, error }) => {
         });
     }
 };
+
 
 
 
