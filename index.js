@@ -320,46 +320,53 @@ const WATCHERS = {
             }
 
             // sadece added create
-          // sadece added create
-for (let i = 0; i < newData.length; i++) {
-  const item = newData[i];
-  const existing = oldMap.get(item.title);
+            for (let i = 0; i < newData.length; i++) {
+                const item = newData[i];
+                const existing = oldMap.get(item.title);
 
-  if (!existing) {
-    const title = item.title;
-
-    // çok basit guard
-    if (!title) {
-      log("SKIP empty title at index", i);
-      continue;
-    }
-    if (title.length > 250) {
-      log("SKIP too long title at index", i, "len=", title.length);
-      log("TITLE:", title);
-      continue;
-    }
-
-    try {
-      await databases.createDocument(
-        APPWRITE_DATABASE_ID,
-        meta.dbCollection,
-        ID.unique(),
-        { title }
-      );
-      log("CREATED:", title);
-    } catch (err) {
-      log("CREATE ERROR at index", i);
-      log("TITLE:", title);
-      log("ERR MSG:", err?.message);
-      log("ERR CODE:", err?.code);
-      log("ERR RESPONSE:", err?.response);
-      throw err;
-    }
-  }
-}
-
+                if (!existing) {
+                    await databases.createDocument(
+                        APPWRITE_DATABASE_ID,
+                        meta.dbCollection,
+                        ID.unique(),
+                        { title: item.title }
+                    );
+                }
+            }
         }
     }
+
+};
+
+// =====================
+//  ANA MOTOR
+// =====================
+
+async function run(distillPayload) {
+    const watcher = WATCHERS[distillPayload.id];
+
+    if (!watcher) {
+        throw new Error(`Bu Distill ID için watcher tanımlı değil: ${distillPayload.id}`);
+    }
+
+    const { databases } = createClient();
+
+    // 1) payload -> meta + newData
+    const { meta, newData } = watcher.parseNewData(distillPayload);
+
+    // 2) DB -> oldData (watcher bilir)
+    const oldData = await watcher.getOldData(databases, meta);
+
+    // 3) compare (watcher bilir)
+    const { added, removed, changed } = watcher.compare(oldData, newData);
+
+    // 4) mail gönder
+    await sendReportMail({ meta, added, removed, changed });
+
+    // 5) DB sync (watcher bilir)
+    await watcher.syncDb(databases, oldData, newData, removed, meta);
+
+    return { meta, added, removed, changed };
 }
 
 // =====================
@@ -387,5 +394,3 @@ export default async ({ req, res, log, error }) => {
         });
     }
 };
-
-
