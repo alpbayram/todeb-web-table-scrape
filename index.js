@@ -320,19 +320,44 @@ const WATCHERS = {
             }
 
             // sadece added create
-            for (let i = 0; i < newData.length; i++) {
-                const item = newData[i];
-                const existing = oldMap.get(item.title);
+          // sadece added create
+for (let i = 0; i < newData.length; i++) {
+  const item = newData[i];
+  const existing = oldMap.get(item.title);
 
-                if (!existing) {
-                    await databases.createDocument(
-                        APPWRITE_DATABASE_ID,
-                        meta.dbCollection,
-                        ID.unique(),
-                        { title: item.title }
-                    );
-                }
-            }
+  if (!existing) {
+    const title = item.title;
+
+    // çok basit guard
+    if (!title) {
+      log("SKIP empty title at index", i);
+      continue;
+    }
+    if (title.length > 250) {
+      log("SKIP too long title at index", i, "len=", title.length);
+      log("TITLE:", title);
+      continue;
+    }
+
+    try {
+      await databases.createDocument(
+        APPWRITE_DATABASE_ID,
+        meta.dbCollection,
+        ID.unique(),
+        { title }
+      );
+      log("CREATED:", title);
+    } catch (err) {
+      log("CREATE ERROR at index", i);
+      log("TITLE:", title);
+      log("ERR MSG:", err?.message);
+      log("ERR CODE:", err?.code);
+      log("ERR RESPONSE:", err?.response);
+      throw err;
+    }
+  }
+}
+
         }
     }
 }
@@ -362,4 +387,5 @@ export default async ({ req, res, log, error }) => {
         });
     }
 };
+
 
