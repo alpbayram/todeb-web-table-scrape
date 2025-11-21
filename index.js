@@ -1,9 +1,8 @@
 import { Client, Databases, ID, Query } from "node-appwrite";
 
 // =====================
-//  CONFIG (.env'den)
+// CONFIG (.env)
 // =====================
-
 const APPWRITE_ENDPOINT = process.env.APPWRITE_ENDPOINT;
 const APPWRITE_PROJECT_ID = process.env.APPWRITE_PROJECT_ID;
 const APPWRITE_API_KEY = process.env.APPWRITE_API_KEY;
@@ -13,9 +12,8 @@ const APPWRITE_DATABASE_ID = process.env.DATABASE_ID;
 const MAIL_FUNCTION_URL = "https://6909b832001efa359c90.fra.appwrite.run";
 
 // =====================
-//  APPWRITE CLIENT
+// APPWRITE CLIENT
 // =====================
-
 function createClient() {
     const client = new Client()
         .setEndpoint(APPWRITE_ENDPOINT)
@@ -23,14 +21,12 @@ function createClient() {
         .setKey(APPWRITE_API_KEY);
 
     const databases = new Databases(client);
-
     return { client, databases };
 }
 
 // =====================
-//  MAIL FUNCTION ÇAĞIRMA
+// MAIL FUNCTION
 // =====================
-
 async function sendReportMail({ meta, added, removed, changed }) {
     await fetch(MAIL_FUNCTION_URL, {
         method: "POST",
@@ -47,22 +43,29 @@ async function sendReportMail({ meta, added, removed, changed }) {
 }
 
 // ====================================================
-//  📌 WATCHERS (ID -> PARSER + DB + COMPARE + SYNC)
+// WATCHERS (Distill slug id -> parser + db + compare)
 // ====================================================
-// Yeni site geldikçe buraya yeni watcher ekleyeceksin.
-// Motor hiçbir schema bilmez.
+// Distill payload örnek:
+// {
+//   id: "tcmb_odeme_kuruluslari",
+//   name: "...",
+//   uri: "...",
+//   text: "[{...},{...}]",
+//   ts: "...",
+//   to: "...",
+//   dbCollection: "collection_id"
+// }
 // ====================================================
 
 const WATCHERS = {
     // ------------------------------------------------
-    // TCMB Ödeme Kuruluşları Tablosu
+    // 1) TCMB Ödeme Kuruluşları Tablosu
     // ------------------------------------------------
-    "tcmb_odeme_kuruluslari": {
-        // distillPayload.text -> JSON string array
+    tcmb_odeme_kuruluslari: {
         parseNewData(distillPayload) {
             const { id, name, uri, text, ts, to, dbCollection } = distillPayload;
 
-            const arr = JSON.parse(text);
+            const arr = JSON.parse(text || "[]");
 
             const newData = arr.map(item => ({
                 kurulus_kodu: String(item.code).trim(),
@@ -88,7 +91,6 @@ const WATCHERS = {
             };
         },
 
-        // ✅ TCMB'ye özel oldData okuma (pagination dahil)
         async getOldData(databases, meta) {
             const limit = 100;
             let offset = 0;
@@ -104,11 +106,8 @@ const WATCHERS = {
 
                 allDocs = allDocs.concat(page.documents);
 
-                if (page.documents.length < limit) {
-                    keepGoing = false;
-                } else {
-                    offset = offset + limit;
-                }
+                if (page.documents.length < limit) keepGoing = false;
+                else offset += limit;
             }
 
             return allDocs.map(doc => ({
@@ -119,66 +118,55 @@ const WATCHERS = {
             }));
         },
 
-        // ✅ TCMB'ye özel compare
         compare(oldData, newData) {
-            // ---- Added / Removed ----
             const oldCodes = new Set(oldData.map(i => i.kurulus_kodu));
             const newCodes = new Set(newData.map(i => i.kurulus_kodu));
 
             const added = newData.filter(i => !oldCodes.has(i.kurulus_kodu));
             const removed = oldData.filter(i => !newCodes.has(i.kurulus_kodu));
 
-            // ---- Common: NEW DATA içinden (DB'de olan kodlar) ----
-            const commonKuruluslar = newData.filter(i => oldCodes.has(i.kurulus_kodu));
+            const common = newData.filter(i => oldCodes.has(i.kurulus_kodu));
 
-            // ---- Changed Ad / Yetki ----
-            const degisenlerName = [];
-            const degisenlerRights = [];
+            const changedCandidates = [];
 
-            for (let i = 0; i < commonKuruluslar.length; i++) {
-                const item = commonKuruluslar[i];
+            for (let i = 0; i < common.length; i++) {
+                const item = common[i];
                 const kod = item.kurulus_kodu;
 
                 const oldItem = oldData.find(x => x.kurulus_kodu === kod);
                 if (!oldItem) continue;
 
-                if (item.kurulus_adi !== oldItem.kurulus_adi) {
-                    degisenlerName.push(item);
-                }
+                const isimDegisti = item.kurulus_adi !== oldItem.kurulus_adi;
 
                 const yeniYetkiler = item.yetkiler || [];
                 const eskiYetkiler = oldItem.yetkiler || [];
 
-                const yetkiDegistiMi =
+                const yetkiDegisti =
                     eskiYetkiler.length !== yeniYetkiler.length ||
                     eskiYetkiler.some(y => !yeniYetkiler.includes(y)) ||
                     yeniYetkiler.some(y => !eskiYetkiler.includes(y));
 
-                if (yetkiDegistiMi) {
-                    degisenlerRights.push(item);
+                if (isimDegisti || yetkiDegisti) {
+                    changedCandidates.push(item);
                 }
             }
 
-            // uniq NEW items
-            const tumDegisenler = [...degisenlerName, ...degisenlerRights];
+            // uniq by kurulus_kodu
             const seen = new Set();
             const uniqNewItems = [];
-
-            for (let i = 0; i < tumDegisenler.length; i++) {
-                const it = tumDegisenler[i];
+            for (const it of changedCandidates) {
                 if (!seen.has(it.kurulus_kodu)) {
                     seen.add(it.kurulus_kodu);
                     uniqNewItems.push(it);
                 }
             }
 
-            // changed: yeni + eski alanları aynı objede
             const changed = uniqNewItems.map(newItem => {
-                const kod = newItem.kurulus_kodu;
-                const oldItem = oldData.find(x => x.kurulus_kodu === kod) || {};
+                const oldItem =
+                    oldData.find(x => x.kurulus_kodu === newItem.kurulus_kodu) || {};
 
                 return {
-                    kurulus_kodu: kod,
+                    kurulus_kodu: newItem.kurulus_kodu,
                     kurulus_adi: newItem.kurulus_adi,
                     kurulus_adi_eski: oldItem.kurulus_adi ?? null,
                     yetkiler: newItem.yetkiler || [],
@@ -189,13 +177,11 @@ const WATCHERS = {
             return { added, removed, changed };
         },
 
-        // ✅ TCMB'ye özel DB senkronu
         async syncDb(databases, oldData, newData, removed, meta) {
             const byCode = new Map(oldData.map(i => [i.kurulus_kodu, i]));
 
             // removed sil
-            for (let i = 0; i < removed.length; i++) {
-                const item = removed[i];
+            for (const item of removed) {
                 const existing = byCode.get(item.kurulus_kodu);
                 if (existing?.docId) {
                     await databases.deleteDocument(
@@ -206,9 +192,8 @@ const WATCHERS = {
                 }
             }
 
-            // newData upsert
-            for (let i = 0; i < newData.length; i++) {
-                const item = newData[i];
+            // upsert
+            for (const item of newData) {
                 const existing = byCode.get(item.kurulus_kodu);
 
                 const payload = {
@@ -234,18 +219,20 @@ const WATCHERS = {
                 }
             }
         }
-    },// ------------------------------------------------
-    // TODEB Duyuru Listesi (sadece title)
+    },
+
     // ------------------------------------------------
-    "tcmb_odeme_sistemleri_ile_ilgili_mevzuat": {
+    // 2) TCMB Mevzuat / Duyuru Listesi (title-only)
+    // ------------------------------------------------
+    tcmb_odeme_sistemleri_ile_ilgili_mevzuat: {
         parseNewData(distillPayload) {
             const { id, name, uri, text, ts, to, dbCollection } = distillPayload;
 
-            const arr = JSON.parse(text); // distill text: [{ title: "..." }, ...]
+            const arr = JSON.parse(text || "[]");
 
-            const newData = arr.map(item => ({
-                title: String(item.title).trim()
-            })).filter(x => x.title); // boşları at
+            const newData = arr
+                .map(item => ({ title: String(item.title).trim() }))
+                .filter(x => x.title);
 
             const trDate = ts
                 ? new Date(ts).toLocaleString("tr-TR", {
@@ -306,10 +293,8 @@ const WATCHERS = {
             const oldMap = new Map(oldData.map(i => [i.title, i]));
 
             // removed sil
-            for (let i = 0; i < removed.length; i++) {
-                const item = removed[i];
+            for (const item of removed) {
                 const existing = oldMap.get(item.title);
-
                 if (existing?.docId) {
                     await databases.deleteDocument(
                         APPWRITE_DATABASE_ID,
@@ -319,12 +304,9 @@ const WATCHERS = {
                 }
             }
 
-            // sadece added create
-            for (let i = 0; i < newData.length; i++) {
-                const item = newData[i];
-                const existing = oldMap.get(item.title);
-
-                if (!existing) {
+            // sadece yeni gelenleri create et
+            for (const item of newData) {
+                if (!oldMap.has(item.title)) {
                     await databases.createDocument(
                         APPWRITE_DATABASE_ID,
                         meta.dbCollection,
@@ -335,18 +317,17 @@ const WATCHERS = {
             }
         }
     }
-
 };
 
 // =====================
-//  ANA MOTOR
+// ANA MOTOR
 // =====================
-
 async function run(distillPayload) {
+    // Distill’den gelen sade slug id ile watcher seç
     const watcher = WATCHERS[distillPayload.id];
 
     if (!watcher) {
-        throw new Error(`Bu Distill ID için watcher tanımlı değil: ${distillPayload.id}`);
+        throw new Error(`Bu Distill ID için watcher yok: ${distillPayload.id}`);
     }
 
     const { databases } = createClient();
@@ -354,25 +335,24 @@ async function run(distillPayload) {
     // 1) payload -> meta + newData
     const { meta, newData } = watcher.parseNewData(distillPayload);
 
-    // 2) DB -> oldData (watcher bilir)
+    // 2) DB -> oldData
     const oldData = await watcher.getOldData(databases, meta);
 
-    // 3) compare (watcher bilir)
+    // 3) compare
     const { added, removed, changed } = watcher.compare(oldData, newData);
 
-    // 4) mail gönder
+    // 4) mail
     await sendReportMail({ meta, added, removed, changed });
 
-    // 5) DB sync (watcher bilir)
+    // 5) DB sync
     await watcher.syncDb(databases, oldData, newData, removed, meta);
 
     return { meta, added, removed, changed };
 }
 
 // =====================
-//  APPWRITE FUNCTION HANDLER
+// APPWRITE FUNCTION HANDLER
 // =====================
-
 export default async ({ req, res, log, error }) => {
     try {
         const body =
