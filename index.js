@@ -1,5 +1,5 @@
 import { Client, Databases, ID } from "node-appwrite";
-
+import { Query } from "node-appwrite";
 // =====================
 //  CONFIG (.env'den)
 // =====================
@@ -33,12 +33,30 @@ function createClient() {
 // =====================
 
 async function getDbData(databases, dbCollection) {
-    const response = await databases.listDocuments(
-        APPWRITE_DATABASE_ID,
-        dbCollection
-    );
+    const allDocs = [];
+    let offset = 0;
+    const limit = 100; // güvenli büyük bir sayı
 
-    const dbData = response.documents.map(doc => ({
+    while (true) {
+        const response = await databases.listDocuments(
+            APPWRITE_DATABASE_ID,
+            dbCollection,
+            [
+                Query.limit(limit),
+                Query.offset(offset)
+            ]
+        );
+
+        allDocs.push(...response.documents);
+
+        if (response.documents.length < limit) {
+            break; // son sayfaya geldik
+        }
+
+        offset += limit;
+    }
+
+    const dbData = allDocs.map(doc => ({
         docId: doc.$id,
         kurulus_kodu: doc.kurulus_kodu,
         kurulus_adi: doc.kurulus_adi,
@@ -369,6 +387,7 @@ export default async ({ req, res, log, error }) => {
         });
     }
 };
+
 
 
 
