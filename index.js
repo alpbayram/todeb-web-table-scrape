@@ -234,7 +234,135 @@ const WATCHERS = {
                 }
             }
         }
+    },// ------------------------------------------------
+    // TODEB Duyuru Listesi (sadece title)
+    // ------------------------------------------------
+    "tcmb_odeme_sistemleri_ile_ilgili_mevzuat": {
+
+        // Distill JSON → newData
+        parseNewData(distillPayload) {
+            const { id, name, uri, text, ts, to, dbCollection } = distillPayload;
+
+            const arr = JSON.parse(text);
+
+            // title listesi
+            const newData = arr.map(item => ({
+                title: String(item.title || "").trim()
+            }));
+
+            const trDate = ts
+                ? new Date(ts).toLocaleString("tr-TR", {
+                    timeZone: "Europe/Istanbul",
+                    year: "numeric",
+                    month: "2-digit",
+                    day: "2-digit",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    second: "2-digit"
+                })
+                : null;
+
+            return {
+                meta: { id, name, uri, trDate, to, dbCollection },
+                newData
+            };
+        },
+
+        // DB'den eski kayıtları oku
+        async getOldData(databases, meta) {
+            const limit = 100;
+            let offset = 0;
+            let allDocs = [];
+            let keepGoing = true;
+
+            while (keepGoing) {
+                const page = await databases.listDocuments(
+                    APPWRITE_DATABASE_ID,
+                    meta.dbCollection,
+                    [
+                        Query.limit(limit),
+                        Query.offset(offset)
+                    ]
+                );
+
+                allDocs = allDocs.concat(page.documents);
+
+                if (page.documents.length < limit) {
+                    keepGoing = false;
+                } else {
+                    offset += limit;
+                }
+            }
+
+            return allDocs.map(doc => ({
+                docId: doc.$id,
+                title: doc.title
+            }));
+        },
+
+        // Added / Removed / Changed
+        compare(oldData, newData) {
+            const oldTitles = new Set(oldData.map(x => x.title));
+            const newTitles = new Set(newData.map(x => x.title));
+
+            // added = newData'da olup oldData'da olmayan
+            const added = newData.filter(x => !oldTitles.has(x.title));
+
+            // removed = oldData'da olup newData'da olmayan
+            const removed = oldData.filter(x => !newTitles.has(x.title));
+
+            // changed = title’da kelime değişimi? → Mantıken title uniq olduğu için:
+            // burada değişim yok, çünkü title tek alandır.
+            const changed = [];
+
+            return { added, removed, changed };
+        },
+
+        // DB senkronizasyonu
+        async syncDb(databases, oldData, newData, removed, meta) {
+
+            const oldMap = new Map(oldData.map(x => [x.title, x]));
+
+            // removed sil
+            for (let i = 0; i < removed.length; i++) {
+                const item = removed[i];
+                const existing = oldMap.get(item.title);
+
+                if (existing?.docId) {
+                    await databases.deleteDocument(
+                        APPWRITE_DATABASE_ID,
+                        meta.dbCollection,
+                        existing.docId
+                    );
+                }
+            }
+
+            // newData'yı yaz
+            for (let i = 0; i < newData.length; i++) {
+                const item = newData[i];
+                const existing = oldMap.get(item.title);
+
+                const payload = { title: item.title };
+
+                if (existing?.docId) {
+                    await databases.updateDocument(
+                        APPWRITE_DATABASE_ID,
+                        meta.dbCollection,
+                        existing.docId,
+                        payload
+                    );
+                } else {
+                    await databases.createDocument(
+                        APPWRITE_DATABASE_ID,
+                        meta.dbCollection,
+                        ID.unique(),
+                        payload
+                    );
+                }
+            }
+        }
     }
+
 };
 
 // =====================
