@@ -527,7 +527,7 @@ const WATCHERS = {
                 .map(item => ({
                     title: String(item.title || "").trim(),
                     // İleride href gelirse buradan alabiliriz:
-                    href: item.href ? String(item.href).trim() : null
+                    
                 }))
                 .filter(x => x.title); // title boş olanları at
 
