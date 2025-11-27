@@ -497,36 +497,63 @@ const WATCHERS = {
         }
     },
     "duyurular": {
-        parseNewData(distillPayload) {
-            const { id, name, uri, text, ts, to, dbCollection } = distillPayload;
+        "tcmb_odeme_duyurular": {
+            parseNewData(distillPayload) {
+                const { id, name, uri, text, ts, to, dbCollection } = distillPayload;
 
-            // Distill text: [ { "title": "...", "href": "..." }, ... ]
-            const arr = JSON.parse(text);
+                // text -> JSON string, içi:
+                // { resultContainer: { content: [ { title: "..." }, ... ] } }
+                const parsed = JSON.parse(text);
 
-            const newData = arr
-                .map(item => ({
-                    title: String(item.title || "").trim(),
-                    href: item.href ? String(item.href).trim() : null
-                }))
-                .filter(x => x.title); // title boş olanları at
+                let arr = [];
 
-            const trDate = ts
-                ? new Date(ts).toLocaleString("tr-TR", {
-                    timeZone: "Europe/Istanbul",
-                    year: "numeric",
-                    month: "2-digit",
-                    day: "2-digit",
-                    hour: "2-digit",
-                    minute: "2-digit",
-                    second: "2-digit"
-                })
-                : null;
+                if (Array.isArray(parsed)) {
+                    // İleride Distill tarafında direkt dizi gönderirsen
+                    arr = parsed;
+                } else if (
+                    parsed &&
+                    parsed.resultContainer &&
+                    Array.isArray(parsed.resultContainer.content)
+                ) {
+                    arr = parsed.resultContainer.content;
+                } else {
+                    // Beklenmeyen format olursa loglamak için
+                    throw new Error("Beklenmeyen JSON formatı (tcmb_odeme_duyurular)");
+                }
 
-            return {
-                meta: { id, name, uri, trDate, to, dbCollection },
-                newData
-            };
-        },
+                // İstersen burada sadece son 10 duyuruyu al:
+                // arr = arr.slice(0, 10);
+
+                const newData = arr
+                    .map(item => ({
+                        title: String(item.title || "").trim(),
+                        // İleride href gelirse buradan alabiliriz:
+                        href: item.href ? String(item.href).trim() : null
+                    }))
+                    .filter(x => x.title); // title boş olanları at
+
+                const trDate = ts
+                    ? new Date(ts).toLocaleString("tr-TR", {
+                        timeZone: "Europe/Istanbul",
+                        year: "numeric",
+                        month: "2-digit",
+                        day: "2-digit",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                        second: "2-digit"
+                    })
+                    : null;
+
+                return {
+                    meta: { id, name, uri, trDate, to, dbCollection },
+                    newData
+                };
+            },
+
+            // getOldData, compare, syncDb aynı kalabilir
+            ...
+}
+
 
         async getOldData(databases, meta) {
             const limit = 100;
