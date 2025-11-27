@@ -1,5 +1,5 @@
 import { Client, Databases, ID, Query } from "node-appwrite";
-
+import fetch from "node-fetch";
 // =====================
 //  CONFIG (.env'den)
 // =====================
