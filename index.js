@@ -69,6 +69,36 @@ async function sendReportMail({ meta, added, removed, changed }) {
     });
 }
 
+import fetch from "node-fetch";
+
+async function detectLanguage(text) {
+    const apiKey = process.env.HF_TOKEN;
+
+    const response = await fetch(
+        "https://api-inference.huggingface.co/models/papluca/xlm-roberta-base-language-detection",
+        {
+            method: "POST",
+            headers: {
+                "Authorization": `Bearer ${apiKey}`,
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                inputs: text
+            })
+        }
+    );
+
+    const result = await response.json();
+
+    // Hata / boş dönüş kontrolü
+    if (!Array.isArray(result) || !result[0] || !Array.isArray(result[0])) {
+        return null;
+    }
+
+    const top = result[0][0]; // en yüksek skor
+    return top?.label || null;
+}
+
 // ====================================================
 //  📌 WATCHERS (id -> parser + oldData + compare + sync)
 // ====================================================
@@ -500,38 +530,19 @@ const WATCHERS = {
         async parseNewData(distillPayload) {
             const { id, name, uri, text, ts, to, dbCollection } = distillPayload;
 
-            const arrRaw = JSON.parse(text); // [{ title: "..." }, ...]
-
-            const HF_TOKEN = process.env.HF_TOKEN;
-
-            async function detectLanguage(title) {
-                const model = "papluca/xlm-roberta-base-language-detection";
-                const response = await fetch(
-                    `https://api-inference.huggingface.co/models/${model}`,
-                    {
-                        method: "POST",
-                        headers: {
-                            "Authorization": `Bearer ${HF_TOKEN}`,
-                            "Content-Type": "application/json"
-                        },
-                        body: JSON.stringify({ inputs: title })
-                    }
-                );
-
-                const result = await response.json();
-                const label = result?.[0]?.label?.toLowerCase() || "unknown";
-                return label;
-            }
+            const arr = JSON.parse(text); // [{ title: "..." }, ...]
 
             const newData = [];
-            for (let item of arrRaw) {
-                const title = String(item.title || "").trim();
-                if (!title) continue;
 
-                const lang = await detectLanguage(title);
+            for (const item of arr) {
+                const rawTitle = String(item.title || "").trim();
+                if (!rawTitle) continue;
 
+                const lang = await detectLanguage(rawTitle);
+
+                // sadece Türkçe olanlar DB'ye alınır
                 if (lang === "tr") {
-                    newData.push({ title });
+                    newData.push({ title: rawTitle });
                 }
             }
 
@@ -557,8 +568,9 @@ const WATCHERS = {
             const limit = 100;
             let offset = 0;
             let allDocs = [];
+            let keepGoing = true;
 
-            while (true) {
+            while (keepGoing) {
                 const page = await databases.listDocuments(
                     APPWRITE_DATABASE_ID,
                     meta.dbCollection,
@@ -567,8 +579,8 @@ const WATCHERS = {
 
                 allDocs = allDocs.concat(page.documents);
 
-                if (page.documents.length < limit) break;
-                offset += limit;
+                if (page.documents.length < limit) keepGoing = false;
+                else offset += limit;
             }
 
             return allDocs.map(doc => ({
@@ -578,32 +590,38 @@ const WATCHERS = {
         },
 
         compare(oldData, newData) {
-            const oldTitles = new Set(oldData.map(i => i.title));
-            const newTitles = new Set(newData.map(i => i.title));
+            const oldSet = new Set(oldData.map(i => i.title));
+            const newSet = new Set(newData.map(i => i.title));
 
-            const added = newData.filter(i => !oldTitles.has(i.title));
-            const removed = oldData.filter(i => !newTitles.has(i.title));
+            const added = newData.filter(i => !oldSet.has(i.title));
+            const removed = oldData.filter(i => !newSet.has(i.title));
 
-            return { added, removed, changed: [] }; // title-only
+            return {
+                added,
+                removed,
+                changed: [] // title-only watcher, değişim yok
+            };
         },
 
         async syncDb(databases, oldData, newData, removed, meta) {
-            const oldMap = new Map(oldData.map(i => [i.title, i]));
+            const map = new Map(oldData.map(i => [i.title, i]));
 
-            for (let rem of removed) {
-                const ex = oldMap.get(rem.title);
-                if (ex?.docId) {
+            // removed sil
+            for (const item of removed) {
+                const existing = map.get(item.title);
+                if (existing?.docId) {
                     await databases.deleteDocument(
                         APPWRITE_DATABASE_ID,
                         meta.dbCollection,
-                        ex.docId
+                        existing.docId
                     );
                 }
             }
 
-            for (let item of newData) {
-                const ex = oldMap.get(item.title);
-                if (!ex) {
+            // added ekle
+            for (const item of newData) {
+                const existing = map.get(item.title);
+                if (!existing) {
                     await databases.createDocument(
                         APPWRITE_DATABASE_ID,
                         meta.dbCollection,
@@ -614,6 +632,7 @@ const WATCHERS = {
             }
         }
     }
+
 
 };
 
