@@ -495,6 +495,124 @@ const WATCHERS = {
                 );
             }
         }
+    },
+    "masak_mevzuat": {
+        async parseNewData(distillPayload) {
+            const { id, name, uri, text, ts, to, dbCollection } = distillPayload;
+
+            const arrRaw = JSON.parse(text); // [{ title: "..." }, ...]
+
+            const HF_TOKEN = process.env.HF_TOKEN;
+
+            async function detectLanguage(title) {
+                const model = "papluca/xlm-roberta-base-language-detection";
+                const response = await fetch(
+                    `https://api-inference.huggingface.co/models/${model}`,
+                    {
+                        method: "POST",
+                        headers: {
+                            "Authorization": `Bearer ${HF_TOKEN}`,
+                            "Content-Type": "application/json"
+                        },
+                        body: JSON.stringify({ inputs: title })
+                    }
+                );
+
+                const result = await response.json();
+                const label = result?.[0]?.label?.toLowerCase() || "unknown";
+                return label;
+            }
+
+            const newData = [];
+            for (let item of arrRaw) {
+                const title = String(item.title || "").trim();
+                if (!title) continue;
+
+                const lang = await detectLanguage(title);
+
+                if (lang === "tr") {
+                    newData.push({ title });
+                }
+            }
+
+            const trDate = ts
+                ? new Date(ts).toLocaleString("tr-TR", {
+                    timeZone: "Europe/Istanbul",
+                    year: "numeric",
+                    month: "2-digit",
+                    day: "2-digit",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    second: "2-digit"
+                })
+                : null;
+
+            return {
+                meta: { id, name, uri, trDate, to, dbCollection },
+                newData
+            };
+        },
+
+        async getOldData(databases, meta) {
+            const limit = 100;
+            let offset = 0;
+            let allDocs = [];
+
+            while (true) {
+                const page = await databases.listDocuments(
+                    APPWRITE_DATABASE_ID,
+                    meta.dbCollection,
+                    [Query.limit(limit), Query.offset(offset)]
+                );
+
+                allDocs = allDocs.concat(page.documents);
+
+                if (page.documents.length < limit) break;
+                offset += limit;
+            }
+
+            return allDocs.map(doc => ({
+                docId: doc.$id,
+                title: doc.title
+            }));
+        },
+
+        compare(oldData, newData) {
+            const oldTitles = new Set(oldData.map(i => i.title));
+            const newTitles = new Set(newData.map(i => i.title));
+
+            const added = newData.filter(i => !oldTitles.has(i.title));
+            const removed = oldData.filter(i => !newTitles.has(i.title));
+
+            return { added, removed, changed: [] }; // title-only
+        },
+
+        async syncDb(databases, oldData, newData, removed, meta) {
+            const oldMap = new Map(oldData.map(i => [i.title, i]));
+
+            for (let rem of removed) {
+                const ex = oldMap.get(rem.title);
+                if (ex?.docId) {
+                    await databases.deleteDocument(
+                        APPWRITE_DATABASE_ID,
+                        meta.dbCollection,
+                        ex.docId
+                    );
+                }
+            }
+
+            for (let item of newData) {
+                const ex = oldMap.get(item.title);
+                if (!ex) {
+                    await databases.createDocument(
+                        APPWRITE_DATABASE_ID,
+                        meta.dbCollection,
+                        ID.unique(),
+                        { title: item.title }
+                    );
+                }
+            }
+        }
     }
 
 };
