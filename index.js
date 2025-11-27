@@ -1,5 +1,5 @@
 import { Client, Databases, ID, Query } from "node-appwrite";
-import fetch from "node-fetch";
+
 // =====================
 //  CONFIG (.env'den)
 // =====================
@@ -69,7 +69,7 @@ async function sendReportMail({ meta, added, removed, changed }) {
     });
 }
 
-import fetch from "node-fetch";
+
 
 async function detectLanguage(text) {
     const apiKey = process.env.HF_TOKEN;
