@@ -264,6 +264,267 @@ const WATCHERS = {
         },
     },
 
+
+    "tcmb_odeme_kuruluslari123": {
+        // distillPayload.text JSON string:
+        // {
+        //   "table": [ { "code": "...", "name": "...", "rights": ["a","b"] }, ... ],
+        //   "html":  [ "<p>...</p> ..." ]
+        // }
+        parseNewData(distillPayload) {
+            const { id, name, uri, text, ts, to, dbCollection, dbCollection2 } = distillPayload;
+
+            const parsed = JSON.parse(text || "{}");
+            const tableArr = Array.isArray(parsed.table) ? parsed.table : [];
+            const htmlArr = Array.isArray(parsed.html) ? parsed.html : [];
+
+            const tableNew = tableArr.map(item => ({
+                kurulus_kodu: String(item.code ?? "").trim(),
+                kurulus_adi: String(item.name ?? "").trim(),
+                yetkiler: Array.isArray(item.rights) ? item.rights : []
+            }));
+
+            // htmlArr[0] -> string veya { html: "..." } varsayalım
+            let htmlString = "";
+            const raw = htmlArr[0];
+            if (typeof raw === "string") {
+                htmlString = raw;
+            } else if (raw && typeof raw.html === "string") {
+                htmlString = raw.html;
+            }
+
+            const trDate = ts
+                ? new Date(ts).toLocaleString("tr-TR", {
+                    timeZone: "Europe/Istanbul",
+                    year: "numeric",
+                    month: "2-digit",
+                    day: "2-digit",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    second: "2-digit"
+                })
+                : null;
+
+            return {
+                meta: { id, name, uri, trDate, to, dbCollection, dbCollection2 },
+                newData: {
+                    table: tableNew,
+                    html: htmlString
+                }
+            };
+        },
+
+        // ✅ oldData: hem table hem html (html için docId de lazım)
+        async getOldData(databases, meta) {
+            // --- TABLE (dbCollection) ---
+            const limit = 100;
+            let offset = 0;
+            let allDocs = [];
+            let keepGoing = true;
+
+            while (keepGoing) {
+                const page = await databases.listDocuments(
+                    APPWRITE_DATABASE_ID,
+                    meta.dbCollection,
+                    [Query.limit(limit), Query.offset(offset)]
+                );
+
+                allDocs = allDocs.concat(page.documents);
+
+                if (page.documents.length < limit) {
+                    keepGoing = false;
+                } else {
+                    offset += limit;
+                }
+            }
+
+            const oldTable = allDocs.map(doc => ({
+                docId: doc.$id,
+                kurulus_kodu: doc.kurulus_kodu,
+                kurulus_adi: doc.kurulus_adi,
+                yetkiler: doc.yetkiler || []
+            }));
+
+            // --- HTML (dbCollection2) tek satır ---
+            let oldHtmlDocs = [];
+            if (meta.dbCollection2) {
+                const htmlPage = await databases.listDocuments(
+                    APPWRITE_DATABASE_ID,
+                    meta.dbCollection2,
+                    [Query.limit(1)]
+                );
+                oldHtmlDocs = htmlPage.documents.map(doc => ({
+                    docId: doc.$id,
+                    html: doc.html || ""
+                }));
+            }
+
+            return {
+                table: oldTable,
+                html: oldHtmlDocs // array, ilk eleman önemli
+            };
+        },
+
+        // ✅ compare: tablo diff + html diff
+        compare(oldData, newData) {
+            const oldTable = oldData.table || [];
+            const newTable = newData.table || [];
+            const oldHtmlDocs = oldData.html || [];
+            const oldHtml = (oldHtmlDocs[0] && oldHtmlDocs[0].html) || "";
+            const newHtml = newData.html || "";
+
+            // ---- TABLE: Added / Removed ----
+            const oldCodes = new Set(oldTable.map(i => i.kurulus_kodu));
+            const newCodes = new Set(newTable.map(i => i.kurulus_kodu));
+
+            const added = newTable.filter(i => !oldCodes.has(i.kurulus_kodu));
+            const removed = oldTable.filter(i => !newCodes.has(i.kurulus_kodu));
+
+            // ---- TABLE: Common + Changed ----
+            const commonKuruluslar = newTable.filter(i => oldCodes.has(i.kurulus_kodu));
+
+            const degisenlerName = [];
+            const degisenlerRights = [];
+
+            for (let i = 0; i < commonKuruluslar.length; i++) {
+                const item = commonKuruluslar[i];
+                const kod = item.kurulus_kodu;
+
+                const oldItem = oldTable.find(x => x.kurulus_kodu === kod);
+                if (!oldItem) continue;
+
+                if (item.kurulus_adi !== oldItem.kurulus_adi) {
+                    degisenlerName.push(item);
+                }
+
+                const yeniYetkiler = item.yetkiler || [];
+                const eskiYetkiler = oldItem.yetkiler || [];
+
+                const yetkiDegistiMi =
+                    eskiYetkiler.length !== yeniYetkiler.length ||
+                    eskiYetkiler.some(y => !yeniYetkiler.includes(y)) ||
+                    yeniYetkiler.some(y => !eskiYetkiler.includes(y));
+
+                if (yetkiDegistiMi) {
+                    degisenlerRights.push(item);
+                }
+            }
+
+            // uniq NEW items (table changed)
+            const tumDegisenler = [...degisenlerName, ...degisenlerRights];
+            const seen = new Set();
+            const uniqNewItems = [];
+
+            for (let i = 0; i < tumDegisenler.length; i++) {
+                const it = tumDegisenler[i];
+                if (!seen.has(it.kurulus_kodu)) {
+                    seen.add(it.kurulus_kodu);
+                    uniqNewItems.push(it);
+                }
+            }
+
+            // table-changed objeleri
+            const changedTable = uniqNewItems.map(newItem => {
+                const kod = newItem.kurulus_kodu;
+                const oldItem = oldTable.find(x => x.kurulus_kodu === kod) || {};
+
+                return {
+                    type: "table", // 🔑 mail tarafında ayırt edeceğiz
+                    kurulus_kodu: kod,
+                    kurulus_adi: newItem.kurulus_adi,
+                    kurulus_adi_eski: oldItem.kurulus_adi ?? null,
+                    yetkiler: newItem.yetkiler || [],
+                    yetkiler_eski: oldItem.yetkiler || []
+                };
+            });
+
+            const changed = [...changedTable];
+
+            // ---- HTML: Değişti mi? Evetse changed içine ayrı obje ekle ----
+            if (oldHtml !== newHtml) {
+                changed.push({
+                    type: "html",
+                    html_eski: oldHtml || null,
+                    html_yeni: newHtml || null
+                });
+            }
+
+            return { added, removed, changed };
+        },
+
+        // ✅ syncDb: table + html iki ayrı collection
+        async syncDb(databases, oldData, newData, removed, meta) {
+            const oldTable = oldData.table || [];
+            const newTable = newData.table || [];
+            const oldHtmlDocs = oldData.html || [];
+            const oldHtmlDoc = oldHtmlDocs[0]; // tek satır
+
+            const byCode = new Map(oldTable.map(i => [i.kurulus_kodu, i]));
+
+            // ---- TABLE: removed sil ----
+            for (let i = 0; i < removed.length; i++) {
+                const item = removed[i];
+                const existing = byCode.get(item.kurulus_kodu);
+                if (existing?.docId) {
+                    await databases.deleteDocument(
+                        APPWRITE_DATABASE_ID,
+                        meta.dbCollection,
+                        existing.docId
+                    );
+                }
+            }
+
+            // ---- TABLE: upsert ----
+            for (let i = 0; i < newTable.length; i++) {
+                const item = newTable[i];
+                const existing = byCode.get(item.kurulus_kodu);
+
+                const payload = {
+                    kurulus_kodu: item.kurulus_kodu,
+                    kurulus_adi: item.kurulus_adi,
+                    yetkiler: item.yetkiler
+                };
+
+                if (existing?.docId) {
+                    await databases.updateDocument(
+                        APPWRITE_DATABASE_ID,
+                        meta.dbCollection,
+                        existing.docId,
+                        payload
+                    );
+                } else {
+                    await databases.createDocument(
+                        APPWRITE_DATABASE_ID,
+                        meta.dbCollection,
+                        ID.unique(),
+                        payload
+                    );
+                }
+            }
+
+            // ---- HTML: tek satır upsert (dbCollection2) ----
+            if (meta.dbCollection2) {
+                const newHtml = newData.html || "";
+
+                if (oldHtmlDoc?.docId) {
+                    await databases.updateDocument(
+                        APPWRITE_DATABASE_ID,
+                        meta.dbCollection2,
+                        oldHtmlDoc.docId,
+                        { html: newHtml }
+                    );
+                } else {
+                    await databases.createDocument(
+                        APPWRITE_DATABASE_ID,
+                        meta.dbCollection2,
+                        ID.unique(),
+                        { html: newHtml }
+                    );
+                }
+            }
+        }
+    },
+
     // ------------------------------------------------
     // Title-only Liste (TODEB/T.C.M.B. mevzuat duyuru vb.)
     // ------------------------------------------------
