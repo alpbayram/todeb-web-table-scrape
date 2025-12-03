@@ -355,7 +355,7 @@ const WATCHERS = {
                 );
                 oldHtmlDocs = htmlPage.documents.map(doc => ({
                     docId: doc.$id,
-                    html: doc.textHtml || ""
+                    textHtml: doc.textHtml || ""
                 }));
             }
 
