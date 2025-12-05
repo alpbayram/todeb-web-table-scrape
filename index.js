@@ -862,7 +862,8 @@ const WATCHERS = {
                 .map(item => ({
                     // 🔑 Artık duyuru_id anahtarımız
                     duyuru_id: String(item.id ?? "").trim(),
-                    title: String(item.title ?? "").trim()
+                    title: String(item.title ?? "").trim(),
+                    slug: item.slug ? String(item.slug).trim() : null
                 }))
                 .filter(x => x.duyuru_id && x.title); // hem id hem title boş değilse
 
