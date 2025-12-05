@@ -826,17 +826,27 @@ const WATCHERS = {
         }
     },
     "duyurular": {
+        // Distill payload → { meta, newData }
         parseNewData(distillPayload) {
             const { id, name, uri, text, ts, to, dbCollection } = distillPayload;
 
-            // text -> JSON string, içi:
-            // { resultContainer: { content: [ { title: "..." }, ... ] } }
+            // text: JSON string
+            // Örnek beklenen format:
+            // {
+            //   "resultContainer": {
+            //     "content": [
+            //       { "id": "123", "title": "..." },
+            //       { "id": "124", "title": "..." }
+            //     ]
+            //   }
+            // }
             const parsed = JSON.parse(text);
 
             let arr = [];
 
             if (Array.isArray(parsed)) {
-                // İleride Distill tarafında direkt dizi gönderirsen
+                // İleride direkt array gönderirsen:
+                // [ { id, title }, ... ]
                 arr = parsed;
             } else if (
                 parsed &&
@@ -845,20 +855,16 @@ const WATCHERS = {
             ) {
                 arr = parsed.resultContainer.content;
             } else {
-                // Beklenmeyen format olursa loglamak için
-                throw new Error("Beklenmeyen JSON formatı (tcmb_odeme_duyurular)");
+                throw new Error("Beklenmeyen JSON formatı (duyurular watcher)");
             }
-
-            // İstersen burada sadece son 10 duyuruyu al:
-            // arr = arr.slice(0, 10);
 
             const newData = arr
                 .map(item => ({
-                    title: String(item.title || "").trim(),
-                    // İleride href gelirse buradan alabiliriz:
-
+                    // 🔑 Artık duyuru_id anahtarımız
+                    duyuru_id: String(item.id ?? "").trim(),
+                    title: String(item.title ?? "").trim()
                 }))
-                .filter(x => x.title); // title boş olanları at
+                .filter(x => x.duyuru_id && x.title); // hem id hem title boş değilse
 
             const trDate = ts
                 ? new Date(ts).toLocaleString("tr-TR", {
@@ -878,6 +884,7 @@ const WATCHERS = {
             };
         },
 
+        // DB → oldData (pagination’lı)
         async getOldData(databases, meta) {
             const limit = 100;
             let offset = 0;
@@ -900,35 +907,41 @@ const WATCHERS = {
                 }
             }
 
+            // Collection’ında şu alanların olduğundan emin ol:
+            // - duyuru_id (string)
+            // - title (string)
+            // - (opsiyonel) href
             return allDocs.map(doc => ({
                 docId: doc.$id,
+                duyuru_id: doc.duyuru_id,
                 title: doc.title,
                 href: doc.href || null
             }));
         },
 
+        // added / removed id'ye göre
         compare(oldData, newData) {
-            // title'ı anahtar olarak kullanıyoruz
-            const oldTitles = new Set(oldData.map(i => i.title));
-            const newTitles = new Set(newData.map(i => i.title));
+            const oldIds = new Set(oldData.map(i => i.duyuru_id));
+            const newIds = new Set(newData.map(i => i.duyuru_id));
 
-            const added = newData.filter(i => !oldTitles.has(i.title));
-            const removed = oldData.filter(i => !newTitles.has(i.title));
+            const added = newData.filter(i => !oldIds.has(i.duyuru_id));
+            const removed = oldData.filter(i => !newIds.has(i.duyuru_id));
 
-            // Duyuruda "changed" track etmiyoruz, title değişirse
-            // eski title removed, yeni title added gibi davranacak
+            // Duyurularda title değişimini "changed" olarak track etmiyoruz.
+            // Aynı id için title değişirse, syncDb sırasında DB’deki title güncellenecek.
             const changed = [];
 
             return { added, removed, changed };
         },
 
         async syncDb(databases, oldData, newData, removed, meta) {
-            const oldMap = new Map(oldData.map(i => [i.title, i]));
+            // Map’i id üzerinden kuruyoruz
+            const oldMap = new Map(oldData.map(i => [i.duyuru_id, i]));
 
             // removed sil
             for (let i = 0; i < removed.length; i++) {
                 const item = removed[i];
-                const existing = oldMap.get(item.title);
+                const existing = oldMap.get(item.duyuru_id);
 
                 if (existing?.docId) {
                     await databases.deleteDocument(
@@ -939,12 +952,13 @@ const WATCHERS = {
                 }
             }
 
-            // newData upsert (title aynıysa update, yoksa create)
+            // newData upsert (id aynıysa update, yoksa create)
             for (let i = 0; i < newData.length; i++) {
                 const item = newData[i];
-                const existing = oldMap.get(item.title);
+                const existing = oldMap.get(item.duyuru_id);
 
                 const payload = {
+                    duyuru_id: item.duyuru_id,
                     title: item.title
                 };
 
@@ -970,6 +984,7 @@ const WATCHERS = {
             }
         }
     },
+
     "vergi_mevzuati": {
         // distillPayload.text -> JSON string:
         // {
