@@ -1131,129 +1131,131 @@ const WATCHERS = {
         }
     },
     "tcmb_duyurular": {
-        parseNewData(distillPayload) {
-            const { id, name, uri, text, ts, to, dbCollection } = distillPayload;
+    // Distill text -> JSON string: [ { id, title, href }, ... ]
+    parseNewData(distillPayload) {
+        const { id, name, uri, text, ts, to, dbCollection } = distillPayload;
 
-            // Distill text: [ { "title": "...", "href": "..." }, ... ]
-            const arr = JSON.parse(text);
+        const arr = JSON.parse(text);
 
-            const newData = arr
-                .map(item => ({
-                    title: String(item.title || "").trim(),
-                    href: item.href ? String(item.href).trim() : null
-                }))
-                .filter(x => x.title); // title boş olanları at
+        const newData = arr
+            .map(item => ({
+                duyuru_id: String(item.id || "").trim(),
+                title: String(item.title || "").trim(),
+                // href'i DB'ye yazmayacağız ama mail için payload'ta kalsın
+                href: item.href || null
+            }))
+            // hem id hem title dolu olmalı
+            .filter(x => x.duyuru_id && x.title);
 
-            const trDate = ts
-                ? new Date(ts).toLocaleString("tr-TR", {
-                    timeZone: "Europe/Istanbul",
-                    year: "numeric",
-                    month: "2-digit",
-                    day: "2-digit",
-                    hour: "2-digit",
-                    minute: "2-digit",
-                    second: "2-digit"
-                })
-                : null;
+        const trDate = ts
+            ? new Date(ts).toLocaleString("tr-TR", {
+                  timeZone: "Europe/Istanbul",
+                  year: "numeric",
+                  month: "2-digit",
+                  day: "2-digit",
+                  hour: "2-digit",
+                  minute: "2-digit",
+                  second: "2-digit"
+              })
+            : null;
 
-            return {
-                meta: { id, name, uri, trDate, to, dbCollection },
-                newData
-            };
-        },
+        return {
+            meta: { id, name, uri, trDate, to, dbCollection },
+            newData
+        };
+    },
 
-        async getOldData(databases, meta) {
-            const limit = 100;
-            let offset = 0;
-            let allDocs = [];
-            let keepGoing = true;
+    // DB'den eski verileri çek
+    async getOldData(databases, meta) {
+        const limit = 100;
+        let offset = 0;
+        let allDocs = [];
+        let keepGoing = true;
 
-            while (keepGoing) {
-                const page = await databases.listDocuments(
+        while (keepGoing) {
+            const page = await databases.listDocuments(
+                APPWRITE_DATABASE_ID,
+                meta.dbCollection,
+                [Query.limit(limit), Query.offset(offset)]
+            );
+
+            allDocs = allDocs.concat(page.documents);
+
+            if (page.documents.length < limit) {
+                keepGoing = false;
+            } else {
+                offset += limit;
+            }
+        }
+
+        return allDocs.map(doc => ({
+            docId: doc.$id,
+            duyuru_id: doc.duyuru_id, // collection'da bu alanı açtın
+            title: doc.title
+        }));
+    },
+
+    // id üzerinden added / removed hesapla
+    compare(oldData, newData) {
+        const oldIds = new Set(oldData.map(i => i.duyuru_id));
+        const newIds = new Set(newData.map(i => i.duyuru_id));
+
+        const added = newData.filter(i => !oldIds.has(i.duyuru_id));
+        const removed = oldData.filter(i => !newIds.has(i.duyuru_id));
+
+        // title değişirse eski id için removed + yeni id için added gibi davranıyoruz
+        const changed = [];
+
+        return { added, removed, changed };
+    },
+
+    // DB senkronu: duyuru_id uniq, title güncellenebilir
+    async syncDb(databases, oldData, newData, removed, meta) {
+        const oldMap = new Map(oldData.map(i => [i.duyuru_id, i]));
+
+        // removed sil
+        for (let i = 0; i < removed.length; i++) {
+            const item = removed[i];
+            const existing = oldMap.get(item.duyuru_id);
+
+            if (existing?.docId) {
+                await databases.deleteDocument(
                     APPWRITE_DATABASE_ID,
                     meta.dbCollection,
-                    [Query.limit(limit), Query.offset(offset)]
+                    existing.docId
                 );
-
-                allDocs = allDocs.concat(page.documents);
-
-                if (page.documents.length < limit) {
-                    keepGoing = false;
-                } else {
-                    offset += limit;
-                }
             }
+        }
 
-            return allDocs.map(doc => ({
-                docId: doc.$id,
-                title: doc.title,
-                href: doc.href || null
-            }));
-        },
+        // newData upsert (duyuru_id aynıysa update, yoksa create)
+        for (let i = 0; i < newData.length; i++) {
+            const item = newData[i];
+            const existing = oldMap.get(item.duyuru_id);
 
-        compare(oldData, newData) {
-            // title'ı anahtar olarak kullanıyoruz
-            const oldTitles = new Set(oldData.map(i => i.title));
-            const newTitles = new Set(newData.map(i => i.title));
+            const payload = {
+                duyuru_id: item.duyuru_id,
+                title: item.title
+            };
 
-            const added = newData.filter(i => !oldTitles.has(i.title));
-            const removed = oldData.filter(i => !newTitles.has(i.title));
-
-            // Duyuruda "changed" track etmiyoruz, title değişirse
-            // eski title removed, yeni title added gibi davranacak
-            const changed = [];
-
-            return { added, removed, changed };
-        },
-
-        async syncDb(databases, oldData, newData, removed, meta) {
-            const oldMap = new Map(oldData.map(i => [i.title, i]));
-
-            // removed sil
-            for (let i = 0; i < removed.length; i++) {
-                const item = removed[i];
-                const existing = oldMap.get(item.title);
-
-                if (existing?.docId) {
-                    await databases.deleteDocument(
-                        APPWRITE_DATABASE_ID,
-                        meta.dbCollection,
-                        existing.docId
-                    );
-                }
-            }
-
-            // newData upsert (title aynıysa update, yoksa create)
-            for (let i = 0; i < newData.length; i++) {
-                const item = newData[i];
-                const existing = oldMap.get(item.title);
-
-                const payload = {
-                    title: item.title
-                };
-
-                if (item.href) {
-                    payload.href = item.href;
-                }
-
-                if (existing?.docId) {
-                    await databases.updateDocument(
-                        APPWRITE_DATABASE_ID,
-                        meta.dbCollection,
-                        existing.docId,
-                        payload
-                    );
-                } else {
-                    await databases.createDocument(
-                        APPWRITE_DATABASE_ID,
-                        meta.dbCollection,
-                        ID.unique(),
-                        payload
-                    );
-                }
+            if (existing?.docId) {
+                await databases.updateDocument(
+                    APPWRITE_DATABASE_ID,
+                    meta.dbCollection,
+                    existing.docId,
+                    payload
+                );
+            } else {
+                await databases.createDocument(
+                    APPWRITE_DATABASE_ID,
+                    meta.dbCollection,
+                    ID.unique(),
+                    payload
+                );
             }
         }
     }
+},
+
 
 };
 
