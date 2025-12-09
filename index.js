@@ -600,13 +600,18 @@ const WATCHERS = {
         parseNewData(distillPayload) {
             const { id, name, uri, text, ts, to, dbCollection } = distillPayload;
 
+            // Distill JS şunu dönüyor:
+            // [ { id: "...uuid...", title: "...", href: "https://..." }, ... ]
             const arr = JSON.parse(text);
 
             const newData = arr
-                .map((item) => ({
-                    title: String(item.title).trim(),
+                .map(item => ({
+                    mevzuat_id: String(item.id || "").trim(),
+                    title: String(item.title || "").trim(),
+                    href: item.href || null  // mail için payload’da kalsın
                 }))
-                .filter((x) => x.title);
+                // hem id hem title dolu olmayanları at
+                .filter(x => x.mevzuat_id && x.title);
 
             const trDate = ts
                 ? new Date(ts).toLocaleString("tr-TR", {
@@ -616,13 +621,13 @@ const WATCHERS = {
                     day: "2-digit",
                     hour: "2-digit",
                     minute: "2-digit",
-                    second: "2-digit",
+                    second: "2-digit"
                 })
                 : null;
 
             return {
                 meta: { id, name, uri, trDate, to, dbCollection },
-                newData,
+                newData
             };
         },
 
@@ -645,29 +650,36 @@ const WATCHERS = {
                 else offset += limit;
             }
 
-            return allDocs.map((doc) => ({
+            // DB şeması:
+            // mevzuat_id (string, uniq), title (string)
+            return allDocs.map(doc => ({
                 docId: doc.$id,
-                title: doc.title,
+                mevzuat_id: doc.mevzuat_id,
+                title: doc.title
             }));
         },
 
         compare(oldData, newData) {
-            const oldTitles = new Set(oldData.map((i) => i.title));
-            const newTitles = new Set(newData.map((i) => i.title));
+            // 🔑 Artık key = mevzuat_id
+            const oldIds = new Set(oldData.map(i => i.mevzuat_id));
+            const newIds = new Set(newData.map(i => i.mevzuat_id));
 
-            const added = newData.filter((i) => !oldTitles.has(i.title));
-            const removed = oldData.filter((i) => !newTitles.has(i.title));
+            const added = newData.filter(i => !oldIds.has(i.mevzuat_id));
+            const removed = oldData.filter(i => !newIds.has(i.mevzuat_id));
 
+            // title değişse bile (id aynı olduğu sürece) changed saymıyoruz,
+            // istersen ilerde burada ayrı changed hesaplayabiliriz.
             return { added, removed, changed: [] };
         },
 
         async syncDb(databases, oldData, newData, removed, meta) {
-            const oldMap = new Map(oldData.map((i) => [i.title, i]));
+            // Eski kayıtları mevzuat_id üzerinden map'le
+            const oldMap = new Map(oldData.map(i => [i.mevzuat_id, i]));
 
             // removed sil
             for (let i = 0; i < removed.length; i++) {
                 const item = removed[i];
-                const existing = oldMap.get(item.title);
+                const existing = oldMap.get(item.mevzuat_id);
                 if (existing?.docId) {
                     await withRetry(() =>
                         databases.deleteDocument(
@@ -679,26 +691,31 @@ const WATCHERS = {
                 }
             }
 
-            // newData uniq
-            const uniqTitles = new Map();
+            // newData içinde duplicate mevzuat_id varsa uniq'le
+            const uniqById = new Map();
             for (const item of newData) {
-                if (item.title) uniqTitles.set(item.title, item);
+                if (item.mevzuat_id) uniqById.set(item.mevzuat_id, item);
             }
-            const uniqNewData = Array.from(uniqTitles.values());
+            const uniqNewData = Array.from(uniqById.values());
 
-            // sadece olmayanı create et (retry + throttle)
+            // sadece DB'de olmayanları create et (mevzuat_id bazlı)
             for (let i = 0; i < uniqNewData.length; i++) {
                 const item = uniqNewData[i];
-                const existing = oldMap.get(item.title);
+                const existing = oldMap.get(item.mevzuat_id);
 
                 if (!existing) {
+                    const payload = {
+                        mevzuat_id: item.mevzuat_id,
+                        title: item.title
+                    };
+
                     try {
                         await withRetry(() =>
                             databases.createDocument(
                                 APPWRITE_DATABASE_ID,
                                 meta.dbCollection,
                                 ID.unique(),
-                                { title: item.title }
+                                payload
                             )
                         );
                     } catch (e) {
@@ -710,10 +727,12 @@ const WATCHERS = {
                     }
                 }
 
+                // rate limit'e takılmamak için
                 if ((i + 1) % 10 === 0) await sleep(150);
             }
-        },
+        }
     },
+
     "tcmb_odeme_kuruluslari_paragraf": {
         // Distill payload -> meta + newData
         // Distill text: HTML string (tek parça)
