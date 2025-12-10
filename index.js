@@ -1187,6 +1187,183 @@ const WATCHERS = {
             }
         }
     },
+    "gib_uluslararasi_mevzuat": {
+        parseNewData(distillPayload) {
+            const { id, name, uri, text, ts, to, dbCollection } = distillPayload;
+
+            const parsed = JSON.parse(text);
+
+            let arr = [];
+
+            // Beklenen format: { resultContainer: { content: [...] } }
+            if (
+                parsed &&
+                parsed.resultContainer &&
+                Array.isArray(parsed.resultContainer.content)
+            ) {
+                arr = parsed.resultContainer.content;
+            } else if (Array.isArray(parsed)) {
+                // İleride direkt dizi dönerse de patlamasın
+                arr = parsed;
+            } else {
+                throw new Error("Beklenmeyen JSON formatı (gib_uluslararasi_mevzuat)");
+            }
+
+            const BASE_URL = "https://gib.gov.tr";
+
+            const newData = arr
+                .map((item) => {
+                    const rawId = item.id;
+                    const rawTurId = item.turId;
+                    const title = String(item.title || "").trim();
+
+                    if (rawId == null || rawTurId == null) return null;
+
+                    const turId = String(rawTurId).trim();
+                    const docId = String(rawId).trim();
+
+                    const mevzuat_id = `${turId}_${docId}`; // uniq key
+
+                    const href = `${BASE_URL}/mevzuat/tur/${turId}/anlasma/${docId}`;
+
+                    return {
+                        mevzuat_id,
+                        title,
+                        href
+                    };
+                })
+                .filter((x) => x && x.mevzuat_id && x.title);
+
+            const trDate = ts
+                ? new Date(ts).toLocaleString("tr-TR", {
+                    timeZone: "Europe/Istanbul",
+                    year: "numeric",
+                    month: "2-digit",
+                    day: "2-digit",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    second: "2-digit"
+                })
+                : null;
+
+            return {
+                meta: { id, name, uri, trDate, to, dbCollection },
+                newData
+            };
+        },
+
+        async getOldData(databases, meta) {
+            const limit = 100;
+            let offset = 0;
+            let allDocs = [];
+            let keepGoing = true;
+
+            while (keepGoing) {
+                const page = await databases.listDocuments(
+                    APPWRITE_DATABASE_ID,
+                    meta.dbCollection,
+                    [Query.limit(limit), Query.offset(offset)]
+                );
+
+                allDocs = allDocs.concat(page.documents);
+
+                if (page.documents.length < limit) keepGoing = false;
+                else offset += limit;
+            }
+
+            // DB sütunları: mevzuat_id, title
+            return allDocs.map((doc) => ({
+                docId: doc.$id,
+                mevzuat_id: doc.mevzuat_id,
+                title: doc.title
+            }));
+        },
+
+        compare(oldData, newData) {
+            // Artık title değil mevzuat_id üzerinden kıyaslıyoruz
+            const oldIds = new Set(oldData.map((i) => i.mevzuat_id));
+            const newIds = new Set(newData.map((i) => i.mevzuat_id));
+
+            const added = newData.filter((i) => !oldIds.has(i.mevzuat_id));
+            const removed = oldData.filter((i) => !newIds.has(i.mevzuat_id));
+
+            // İstersek burada title değişimini de track edebiliriz.
+            // Şimdilik gerek yok dedik -> changed boş.
+            const changed = [];
+
+            return { added, removed, changed };
+        },
+
+        async syncDb(databases, oldData, newData, removed, meta) {
+            const oldMap = new Map(oldData.map((i) => [i.mevzuat_id, i]));
+
+            // removed sil
+            for (let i = 0; i < removed.length; i++) {
+                const item = removed[i];
+                const existing = oldMap.get(item.mevzuat_id);
+                if (existing?.docId) {
+                    await withRetry(() =>
+                        databases.deleteDocument(
+                            APPWRITE_DATABASE_ID,
+                            meta.dbCollection,
+                            existing.docId
+                        )
+                    );
+                }
+            }
+
+            // newData uniq (mevzuat_id bazında)
+            const uniqMap = new Map();
+            for (const item of newData) {
+                if (item.mevzuat_id) uniqMap.set(item.mevzuat_id, item);
+            }
+            const uniqNewData = Array.from(uniqMap.values());
+
+            // upsert: varsa update (title güncelle), yoksa create
+            for (let i = 0; i < uniqNewData.length; i++) {
+                const item = uniqNewData[i];
+                const existing = oldMap.get(item.mevzuat_id);
+
+                const payload = {
+                    mevzuat_id: item.mevzuat_id,
+                    title: item.title
+                };
+
+                try {
+                    if (existing?.docId) {
+                        await withRetry(() =>
+                            databases.updateDocument(
+                                APPWRITE_DATABASE_ID,
+                                meta.dbCollection,
+                                existing.docId,
+                                payload
+                            )
+                        );
+                    } else {
+                        await withRetry(() =>
+                            databases.createDocument(
+                                APPWRITE_DATABASE_ID,
+                                meta.dbCollection,
+                                ID.unique(),
+                                payload
+                            )
+                        );
+                    }
+                } catch (e) {
+                    console.log("DB WRITE FAIL ITEM =>", item);
+                    console.log("ERR message =>", e?.message);
+                    console.log("ERR code =>", e?.code);
+                    console.log("ERR type =>", e?.type);
+                    console.log("ERR response =>", e?.response);
+                }
+
+                // Çok yazıyorsak hafif fren
+                if ((i + 1) % 10 === 0) {
+                    await sleep(150);
+                }
+            }
+        }
+    },
 
     "tcmb_duyurular": {
         // Distill text -> JSON string: [ { id, title, href }, ... ]
