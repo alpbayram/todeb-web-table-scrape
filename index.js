@@ -1006,41 +1006,49 @@ const WATCHERS = {
     },
 
     "vergi_mevzuati": {
-        // distillPayload.text -> JSON string:
-        // {
-        //   "resultContainer": {
-        //     "results": [
-        //       { "text": "..." },
-        //       ...
-        //     ]
-        //   }
-        // }
+        // Distill payload -> { meta, newData }
         parseNewData(distillPayload) {
             const { id, name, uri, text, ts, to, dbCollection } = distillPayload;
 
-            const parsed = JSON.parse(text);
+            const parsed = JSON.parse(text || "{}");
 
-            let arr = [];
+            const results = Array.isArray(parsed?.resultContainer?.results)
+                ? parsed.resultContainer.results
+                : [];
 
-            if (Array.isArray(parsed)) {
-                // İleride direkt dizi gönderirsen yine çalışsın
-                arr = parsed;
-            } else if (
-                parsed &&
-                parsed.resultContainer &&
-                Array.isArray(parsed.resultContainer.results)
-            ) {
-                arr = parsed.resultContainer.results;
-            } else {
-                throw new Error("Beklenmeyen JSON formatı (vergi_mevzuati)");
+            function buildMevzuatId(item) {
+                const url = item.url || "";
+                const match = url.match(/\/(\d+)$/);  // sondaki sayı
+                if (!match) return null;
+
+                const urlId = match[1];
+                const entityType = String(item.entityType || "GENERIC").toUpperCase();
+                return `${entityType}_${urlId}`;
             }
 
-            const newData = arr
-                .map(item => ({
-                    // Bu sayfada alan adı "text", ama yine de title varsa onu da deneriz
-                    title: String(item.title || item.text || "").trim()
-                }))
-                .filter(x => x.title); // boşları at
+            const newDataRaw = results.map(item => {
+                const mevzuat_id = buildMevzuatId(item);
+                const title = String(item.text || "").trim();
+
+                // URL zaten tam geliyorsa direkt kullanıyoruz
+                const rawUrl = item.url || "";
+                const href = rawUrl
+                    ? (rawUrl.startsWith("http")
+                        ? rawUrl
+                        : `https://gib.gov.tr${rawUrl}`)
+                    : null;
+
+                return {
+                    mevzuat_id,
+                    title,
+                    href
+                };
+            });
+
+            // id veya title olmayanları at
+            const newData = newDataRaw.filter(
+                x => x.mevzuat_id && x.title
+            );
 
             const trDate = ts
                 ? new Date(ts).toLocaleString("tr-TR", {
@@ -1084,71 +1092,102 @@ const WATCHERS = {
 
             return allDocs.map(doc => ({
                 docId: doc.$id,
-                title: doc.title,
-                href: doc.href || null
+                mevzuat_id: doc.mevzuat_id,
+                title: doc.title
+                // href DB'de yok, bilinçli olarak almıyoruz
             }));
         },
 
         compare(oldData, newData) {
-            const oldTitles = new Set(oldData.map(i => i.title));
-            const newTitles = new Set(newData.map(i => i.title));
+            const oldIds = new Set(oldData.map(i => i.mevzuat_id));
+            const newIds = new Set(newData.map(i => i.mevzuat_id));
 
-            const added = newData.filter(i => !oldTitles.has(i.title));
-            const removed = oldData.filter(i => !newTitles.has(i.title));
+            const added = newData.filter(i => !oldIds.has(i.mevzuat_id));
+            const removed = oldData.filter(i => !newIds.has(i.mevzuat_id));
 
-            const changed = []; // title-only → changed yok, eski title silinmiş, yeni title eklenmiş gibi davranıyoruz
+            // Şimdilik changed takibi yok
+            const changed = [];
 
             return { added, removed, changed };
         },
 
         async syncDb(databases, oldData, newData, removed, meta) {
-            const oldMap = new Map(oldData.map(i => [i.title, i]));
+            const oldMap = new Map(oldData.map(i => [i.mevzuat_id, i]));
 
             // removed sil
             for (let i = 0; i < removed.length; i++) {
                 const item = removed[i];
-                const existing = oldMap.get(item.title);
+                const existing = oldMap.get(item.mevzuat_id);
 
                 if (existing?.docId) {
-                    await databases.deleteDocument(
-                        APPWRITE_DATABASE_ID,
-                        meta.dbCollection,
-                        existing.docId
+                    await withRetry(() =>
+                        databases.deleteDocument(
+                            APPWRITE_DATABASE_ID,
+                            meta.dbCollection,
+                            existing.docId
+                        )
                     );
                 }
             }
 
-            // newData upsert (title aynıysa update, yoksa create)
-            for (let i = 0; i < newData.length; i++) {
-                const item = newData[i];
-                const existing = oldMap.get(item.title);
+            // newData uniq (mevzuat_id bazlı)
+            const uniqMap = new Map();
+            for (const item of newData) {
+                if (item.mevzuat_id) {
+                    uniqMap.set(item.mevzuat_id, {
+                        mevzuat_id: item.mevzuat_id,
+                        title: item.title
+                        // href DB'ye gitmiyor
+                    });
+                }
+            }
+            const uniqNewData = Array.from(uniqMap.values());
+
+            // upsert
+            for (let i = 0; i < uniqNewData.length; i++) {
+                const item = uniqNewData[i];
+                const existing = oldMap.get(item.mevzuat_id);
 
                 const payload = {
+                    mevzuat_id: item.mevzuat_id,
                     title: item.title
                 };
 
-                if (item.href) {
-                    payload.href = item.href;
+                try {
+                    if (existing?.docId) {
+                        await withRetry(() =>
+                            databases.updateDocument(
+                                APPWRITE_DATABASE_ID,
+                                meta.dbCollection,
+                                existing.docId,
+                                payload
+                            )
+                        );
+                    } else {
+                        await withRetry(() =>
+                            databases.createDocument(
+                                APPWRITE_DATABASE_ID,
+                                meta.dbCollection,
+                                ID.unique(),
+                                payload
+                            )
+                        );
+                    }
+                } catch (e) {
+                    console.log("DB WRITE FAIL ITEM =>", item);
+                    console.log("ERR message =>", e?.message);
+                    console.log("ERR code =>", e?.code);
+                    console.log("ERR type =>", e?.type);
+                    console.log("ERR response =>", e?.response);
                 }
 
-                if (existing?.docId) {
-                    await databases.updateDocument(
-                        APPWRITE_DATABASE_ID,
-                        meta.dbCollection,
-                        existing.docId,
-                        payload
-                    );
-                } else {
-                    await databases.createDocument(
-                        APPWRITE_DATABASE_ID,
-                        meta.dbCollection,
-                        ID.unique(),
-                        payload
-                    );
+                if ((i + 1) % 10 === 0) {
+                    await sleep(150);
                 }
             }
         }
     },
+
     "tcmb_duyurular": {
         // Distill text -> JSON string: [ { id, title, href }, ... ]
         parseNewData(distillPayload) {
