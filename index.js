@@ -1388,6 +1388,133 @@ const WATCHERS = {
             }
         }
     },
+    "gib_kkdf": {
+        parseNewData(distillPayload) {
+            const { id, name, uri, text, ts, to, dbCollection } = distillPayload;
+
+            const parsed = JSON.parse(text);
+            const arr = parsed?.resultContainer?.content || [];
+
+            const baseUrl = "https://gib.gov.tr/mevzuat/kkdf";
+
+            const newData = arr
+                .map(item => {
+                    const title = String(item.title || "").trim();
+                    const mevzuatId = String(item.id || "").trim();
+
+                    if (!title || !mevzuatId) return null;
+
+                    const href = item.link
+                        ? item.link.trim()
+                        : `${baseUrl}/${mevzuatId}`;
+
+                    return {
+                        title,
+                        mevzuat_id: mevzuatId,
+                        href
+                    };
+                })
+                .filter(Boolean);
+
+            const trDate = ts
+                ? new Date(ts).toLocaleString("tr-TR", {
+                    timeZone: "Europe/Istanbul",
+                    year: "numeric",
+                    month: "2-digit",
+                    day: "2-digit",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    second: "2-digit"
+                })
+                : null;
+
+            return {
+                meta: { id, name, uri, trDate, to, dbCollection },
+                newData
+            };
+        },
+
+        async getOldData(databases, meta) {
+            const limit = 100;
+            let offset = 0;
+            let list = [];
+            let keep = true;
+
+            while (keep) {
+                const page = await databases.listDocuments(
+                    APPWRITE_DATABASE_ID,
+                    meta.dbCollection,
+                    [Query.limit(limit), Query.offset(offset)]
+                );
+
+                list = list.concat(page.documents);
+
+                if (page.documents.length < limit) keep = false;
+                else offset += limit;
+            }
+
+            return list.map(doc => ({
+                docId: doc.$id,
+                mevzuat_id: doc.mevzuat_id,
+                title: doc.title
+            }));
+        },
+
+        compare(oldData, newData) {
+            const oldIds = new Set(oldData.map(i => i.mevzuat_id));
+            const newIds = new Set(newData.map(i => i.mevzuat_id));
+
+            const added = newData.filter(i => !oldIds.has(i.mevzuat_id));
+            const removed = oldData.filter(i => !newIds.has(i.mevzuat_id));
+
+            return { added, removed, changed: [] };
+        },
+
+        async syncDb(databases, oldData, newData, removed, meta) {
+            const oldMap = new Map(oldData.map(i => [i.mevzuat_id, i]));
+
+            // removed sil
+            for (const item of removed) {
+                const existing = oldMap.get(item.mevzuat_id);
+                if (existing?.docId) {
+                    await withRetry(() =>
+                        databases.deleteDocument(
+                            APPWRITE_DATABASE_ID,
+                            meta.dbCollection,
+                            existing.docId
+                        )
+                    );
+                }
+            }
+
+            // uniq new data
+            const uniqMap = new Map();
+            for (const item of newData) {
+                uniqMap.set(item.mevzuat_id, item);
+            }
+            const uniqNew = [...uniqMap.values()];
+
+            // create (update yok çünkü changed takip etmiyoruz)
+            for (let i = 0; i < uniqNew.length; i++) {
+                const item = uniqNew[i];
+                if (!oldMap.has(item.mevzuat_id)) {
+                    await withRetry(() =>
+                        databases.createDocument(
+                            APPWRITE_DATABASE_ID,
+                            meta.dbCollection,
+                            ID.unique(),
+                            {
+                                mevzuat_id: item.mevzuat_id,
+                                title: item.title
+                            }
+                        )
+                    );
+                }
+
+                if ((i + 1) % 10 === 0) await sleep(150);
+            }
+        }
+    },
 
     "gib_uluslararasi_mevzuat": {
         parseNewData(distillPayload) {
