@@ -1212,9 +1212,9 @@ const WATCHERS = {
             } else if (
                 parsed &&
                 parsed.resultContainer &&
-                Array.isArray(parsed.resultContainer.results)
+                Array.isArray(parsed.resultContainer.content)
             ) {
-                arr = parsed.resultContainer.results;
+                arr = parsed.resultContainer.content;
             } else {
                 throw new Error("Beklenmeyen JSON formatı (gib_taslaklar)");
             }
