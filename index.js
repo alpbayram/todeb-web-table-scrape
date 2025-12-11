@@ -1187,6 +1187,208 @@ const WATCHERS = {
             }
         }
     },
+    // ------------------------------------------------
+    // GİB - Taslaklar
+    // Örnek JSON:
+    // {
+    //   "resultContainer": {
+    //     "results": [
+    //       { "id": 13, "text": "..." }
+    //     ]
+    //   }
+    // }
+    // DB sütunları: mevzuat_id, title
+    // mevzuat_id = String(id)
+    // ------------------------------------------------
+    "gib_taslaklar": {
+        parseNewData(distillPayload) {
+            const { id, name, uri, text, ts, to, dbCollection } = distillPayload;
+
+            const parsed = JSON.parse(text);
+
+            let arr = [];
+            if (Array.isArray(parsed)) {
+                arr = parsed;
+            } else if (
+                parsed &&
+                parsed.resultContainer &&
+                Array.isArray(parsed.resultContainer.results)
+            ) {
+                arr = parsed.resultContainer.results;
+            } else {
+                throw new Error("Beklenmeyen JSON formatı (gib_taslaklar)");
+            }
+
+            const BASE_URL = "https://gib.gov.tr";
+
+            const newData = arr
+                .map((item) => {
+                    const rawId = item.id ?? item.ID ?? null;
+                    const mevzuat_id = rawId != null ? String(rawId).trim() : "";
+
+                    const title = String(item.text || item.title || "").trim();
+
+                    if (!mevzuat_id || !title) return null;
+
+                    const href = `${BASE_URL}/mevzuat/taslak/${mevzuat_id}`;
+
+                    return {
+                        mevzuat_id,
+                        title,
+                        href // DB'ye yazmayacağız ama mail function’da kullanabiliriz
+                    };
+                })
+                .filter(Boolean); // null'ları at
+
+            const trDate = ts
+                ? new Date(ts).toLocaleString("tr-TR", {
+                    timeZone: "Europe/Istanbul",
+                    year: "numeric",
+                    month: "2-digit",
+                    day: "2-digit",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    second: "2-digit"
+                })
+                : null;
+
+            return {
+                meta: { id, name, uri, trDate, to, dbCollection },
+                newData
+            };
+        },
+
+        async getOldData(databases, meta) {
+            const limit = 100;
+            let offset = 0;
+            let allDocs = [];
+            let keepGoing = true;
+
+            while (keepGoing) {
+                const page = await databases.listDocuments(
+                    APPWRITE_DATABASE_ID,
+                    meta.dbCollection,
+                    [Query.limit(limit), Query.offset(offset)]
+                );
+
+                allDocs = allDocs.concat(page.documents);
+
+                if (page.documents.length < limit) keepGoing = false;
+                else offset += limit;
+            }
+
+            // DB: mevzuat_id, title
+            return allDocs.map((doc) => ({
+                docId: doc.$id,
+                mevzuat_id: doc.mevzuat_id,
+                title: doc.title
+            }));
+        },
+
+        compare(oldData, newData) {
+            const oldIds = new Set(oldData.map((i) => i.mevzuat_id));
+            const newIds = new Set(newData.map((i) => i.mevzuat_id));
+
+            const added = newData.filter((i) => !oldIds.has(i.mevzuat_id));
+            const removed = oldData.filter((i) => !newIds.has(i.mevzuat_id));
+
+            // İstersen title değişimini de changed olarak takip edelim
+            const changed = [];
+
+            for (let i = 0; i < newData.length; i++) {
+                const item = newData[i];
+                const oldItem = oldData.find(
+                    (o) => o.mevzuat_id === item.mevzuat_id
+                );
+                if (!oldItem) continue;
+
+                if ((oldItem.title || "") !== (item.title || "")) {
+                    changed.push({
+                        mevzuat_id: item.mevzuat_id,
+                        title: item.title,
+                        title_eski: oldItem.title || null,
+                        href: item.href || null
+                    });
+                }
+            }
+
+            return { added, removed, changed };
+        },
+
+        async syncDb(databases, oldData, newData, removed, meta) {
+            const oldMap = new Map(
+                oldData.map((i) => [i.mevzuat_id, i])
+            );
+
+            // removed sil
+            for (let i = 0; i < removed.length; i++) {
+                const item = removed[i];
+                const existing = oldMap.get(item.mevzuat_id);
+                if (existing?.docId) {
+                    await withRetry(() =>
+                        databases.deleteDocument(
+                            APPWRITE_DATABASE_ID,
+                            meta.dbCollection,
+                            existing.docId
+                        )
+                    );
+                }
+            }
+
+            // newData uniq (mevzuat_id bazlı)
+            const uniqMap = new Map();
+            for (const item of newData) {
+                if (item.mevzuat_id) {
+                    uniqMap.set(item.mevzuat_id, item);
+                }
+            }
+            const uniqNewData = Array.from(uniqMap.values());
+
+            // upsert
+            for (let i = 0; i < uniqNewData.length; i++) {
+                const item = uniqNewData[i];
+                const existing = oldMap.get(item.mevzuat_id);
+
+                const payload = {
+                    mevzuat_id: item.mevzuat_id,
+                    title: item.title
+                };
+
+                try {
+                    if (existing?.docId) {
+                        await withRetry(() =>
+                            databases.updateDocument(
+                                APPWRITE_DATABASE_ID,
+                                meta.dbCollection,
+                                existing.docId,
+                                payload
+                            )
+                        );
+                    } else {
+                        await withRetry(() =>
+                            databases.createDocument(
+                                APPWRITE_DATABASE_ID,
+                                meta.dbCollection,
+                                ID.unique(),
+                                payload
+                            )
+                        );
+                    }
+                } catch (e) {
+                    console.log("DB WRITE FAIL ITEM =>", item);
+                    console.log("ERR message =>", e?.message);
+                    console.log("ERR code =>", e?.code);
+                    console.log("ERR type =>", e?.type);
+                    console.log("ERR response =>", e?.response);
+                }
+
+                if ((i + 1) % 10 === 0) {
+                    await sleep(150);
+                }
+            }
+        }
+    },
+
     "gib_uluslararasi_mevzuat": {
         parseNewData(distillPayload) {
             const { id, name, uri, text, ts, to, dbCollection } = distillPayload;
