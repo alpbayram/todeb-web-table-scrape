@@ -844,6 +844,125 @@ const WATCHERS = {
             }
         }
     },
+    "masak_mevzuat": {
+        // DistillPayload.text -> JSON string array: [{ title, href }, ...]
+        parseNewData(distillPayload) {
+            const { id, name, uri, text, ts, to, dbCollection } = distillPayload;
+
+            const arr = JSON.parse(text);
+
+            // newData: href + title
+            const newDataRaw = (Array.isArray(arr) ? arr : [])
+                .map(item => ({
+                    title: String(item?.title || "").trim(),
+                    href: String(item?.href || "").trim()
+                }))
+                .filter(x => x.href); // href boşsa at
+
+            // href uniq
+            const uniq = new Map();
+            for (const it of newDataRaw) {
+                if (!uniq.has(it.href)) uniq.set(it.href, it);
+            }
+            const newData = Array.from(uniq.values());
+
+            const trDate = ts
+                ? new Date(ts).toLocaleString("tr-TR", {
+                    timeZone: "Europe/Istanbul",
+                    year: "numeric",
+                    month: "2-digit",
+                    day: "2-digit",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    second: "2-digit"
+                })
+                : null;
+
+            return {
+                meta: { id, name, uri, trDate, to, dbCollection },
+                newData
+            };
+        },
+
+        async getOldData(databases, meta) {
+            const limit = 100;
+            let offset = 0;
+            let allDocs = [];
+            let keepGoing = true;
+
+            while (keepGoing) {
+                const page = await databases.listDocuments(
+                    APPWRITE_DATABASE_ID,
+                    meta.dbCollection,
+                    [Query.limit(limit), Query.offset(offset)]
+                );
+
+                allDocs = allDocs.concat(page.documents);
+
+                if (page.documents.length < limit) keepGoing = false;
+                else offset += limit;
+            }
+
+            return allDocs.map(doc => ({
+                docId: doc.$id,
+                title: doc.title || "",
+                href: doc.href || ""
+            }));
+        },
+
+        compare(oldData, newData) {
+            const oldHrefs = new Set(oldData.map(i => i.href).filter(Boolean));
+            const newHrefs = new Set(newData.map(i => i.href).filter(Boolean));
+
+            const added = newData.filter(i => !oldHrefs.has(i.href));
+            const removed = oldData.filter(i => !newHrefs.has(i.href));
+
+            return { added, removed, changed: [] };
+        },
+
+        async syncDb(databases, oldData, newData, removed, meta) {
+            const oldMap = new Map(oldData.map(i => [i.href, i])); // href -> old row
+
+            // removed sil
+            for (let i = 0; i < removed.length; i++) {
+                const item = removed[i];
+                const existing = oldMap.get(item.href);
+
+                if (existing?.docId) {
+                    await withRetry(() =>
+                        databases.deleteDocument(
+                            APPWRITE_DATABASE_ID,
+                            meta.dbCollection,
+                            existing.docId
+                        )
+                    );
+                }
+            }
+
+            // create (sadece yoksa)
+            for (let i = 0; i < newData.length; i++) {
+                const item = newData[i];
+                const existing = oldMap.get(item.href);
+
+                if (!existing) {
+                    await withRetry(() =>
+                        databases.createDocument(
+                            APPWRITE_DATABASE_ID,
+                            meta.dbCollection,
+                            ID.unique(),
+                            {
+                                title: item.title,
+                                href: item.href
+                            }
+                        )
+                    );
+                }
+
+                if ((i + 1) % 10 === 0) await sleep(150);
+            }
+        }
+    },
+
     "duyurular": {
         // Distill payload → { meta, newData }
         parseNewData(distillPayload) {
