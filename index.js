@@ -1388,6 +1388,177 @@ const WATCHERS = {
             }
         }
     },
+    // WATCHERS içine ekle:
+    //  "masak_basin_duyuru": { ... }
+
+    "masak_basin_duyuru": {
+        parseNewData(distillPayload) {
+            const { id, name, uri, text, ts, to, dbCollection } = distillPayload;
+
+            // text: JSON string, örnek:
+            // [
+            //   { id: 5543, slug: "...", title: { rendered: "..." } },
+            //   ...
+            // ]
+            const arr = JSON.parse(text);
+
+            if (!Array.isArray(arr)) {
+                throw new Error("Beklenmeyen JSON formatı (masak_basin_duyuru)");
+            }
+
+            const BASE_URL = "https://masak.hmb.gov.tr/duyuru/";
+
+            const newData = arr
+                .map(item => {
+                    const duyuruId = String(item.id ?? "").trim();
+                    const slug = item.slug || "";
+                    const href = slug ? `${BASE_URL}${slug}/` : null;
+
+                    // title.rendered HTML entity / tag içerebilir, direkt kullanıyoruz
+                    const rawTitle =
+                        (item.title && item.title.rendered) ||
+                        item.title ||
+                        "";
+
+                    const title = String(rawTitle).trim();
+
+                    return {
+                        duyuru_id: duyuruId,
+                        title,
+                        slug,
+                        href
+                    };
+                })
+                .filter(x => x.duyuru_id && x.title); // id veya title boşsa alma
+
+            const trDate = ts
+                ? new Date(ts).toLocaleString("tr-TR", {
+                    timeZone: "Europe/Istanbul",
+                    year: "numeric",
+                    month: "2-digit",
+                    day: "2-digit",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    second: "2-digit"
+                })
+                : null;
+
+            return {
+                meta: { id, name, uri, trDate, to, dbCollection },
+                newData
+            };
+        },
+
+        async getOldData(databases, meta) {
+            const limit = 100;
+            let offset = 0;
+            let allDocs = [];
+            let keepGoing = true;
+
+            while (keepGoing) {
+                const page = await databases.listDocuments(
+                    APPWRITE_DATABASE_ID,
+                    meta.dbCollection,
+                    [Query.limit(limit), Query.offset(offset)]
+                );
+
+                allDocs = allDocs.concat(page.documents);
+
+                if (page.documents.length < limit) {
+                    keepGoing = false;
+                } else {
+                    offset += limit;
+                }
+            }
+
+            // DB şeman:
+            //  masak_basin_duyuru: { duyuru_id, title }
+            return allDocs.map(doc => ({
+                docId: doc.$id,
+                duyuru_id: doc.duyuru_id,
+                title: doc.title
+            }));
+        },
+
+        compare(oldData, newData) {
+            // uniq key: duyuru_id
+            const oldIds = new Set(oldData.map(i => i.duyuru_id));
+            const newIds = new Set(newData.map(i => i.duyuru_id));
+
+            const added = newData.filter(i => !oldIds.has(i.duyuru_id));
+            const removed = oldData.filter(i => !newIds.has(i.duyuru_id));
+
+            // klasik "duyuru" mantığı: changed yok
+            const changed = [];
+
+            return { added, removed, changed };
+        },
+
+        async syncDb(databases, oldData, newData, removed, meta) {
+            const oldMap = new Map(oldData.map(i => [i.duyuru_id, i]));
+
+            // --- removed sil ---
+            for (let i = 0; i < removed.length; i++) {
+                const item = removed[i];
+                const existing = oldMap.get(item.duyuru_id);
+
+                if (existing?.docId) {
+                    await withRetry(() =>
+                        databases.deleteDocument(
+                            APPWRITE_DATABASE_ID,
+                            meta.dbCollection,
+                            existing.docId
+                        )
+                    );
+                }
+            }
+
+            // --- newData uniq (aynı duyuru_id iki kere geldiyse sonuncuyu al) ---
+            const uniqMap = new Map();
+            for (const item of newData) {
+                if (item.duyuru_id) {
+                    uniqMap.set(item.duyuru_id, item);
+                }
+            }
+            const uniqNewData = Array.from(uniqMap.values());
+
+            // --- sadece DB'de olmayanları create et (title doldur) ---
+            for (let i = 0; i < uniqNewData.length; i++) {
+                const item = uniqNewData[i];
+                const existing = oldMap.get(item.duyuru_id);
+
+                if (!existing) {
+                    const payload = {
+                        duyuru_id: item.duyuru_id,
+                        title: item.title
+                    };
+
+                    try {
+                        await withRetry(() =>
+                            databases.createDocument(
+                                APPWRITE_DATABASE_ID,
+                                meta.dbCollection,
+                                ID.unique(),
+                                payload
+                            )
+                        );
+                    } catch (e) {
+                        console.log("DB WRITE FAIL ITEM =>", item);
+                        console.log("ERR message =>", e?.message);
+                        console.log("ERR code =>", e?.code);
+                        console.log("ERR type =>", e?.type);
+                        console.log("ERR response =>", e?.response);
+                    }
+                }
+
+                // Appwrite rate limit'e nazik davranalım
+                if ((i + 1) % 10 === 0) {
+                    await sleep(150);
+                }
+            }
+        }
+    },
+
     "gib_kkdf": {
         parseNewData(distillPayload) {
             const { id, name, uri, text, ts, to, dbCollection } = distillPayload;
