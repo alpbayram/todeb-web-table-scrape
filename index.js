@@ -84,7 +84,7 @@ async function enqueueToPool(databases, meta, rawBody) {
         poolCollection,
         ID.unique(),
         {
-            payload: payloadString,            
+            payload: payloadString,
             sourceId: meta?.id || rawBody?.id || null
         }
     );
@@ -2005,6 +2005,151 @@ const WATCHERS = {
             }
         }
     },
+    "bddk_mevzuat_mode_pool_test": {
+        parseNewData(distillPayload) {
+            const { id, name, uri, text, ts, to, mode, dbCollection, dbCollectionPool } = distillPayload;
+
+            const arr = JSON.parse(text); // [{subfolder,title,href,indir,ek}, ...]
+
+            const newData = (Array.isArray(arr) ? arr : [])
+                .map(item => ({
+                    subfolder: String(item.subfolder || "").trim(),
+                    title: String(item.title || "").trim(),
+                    href: String(item.href || "").trim(),
+                    indir: item.indir ?? null,
+                    ek: item.ek ?? null
+                }))
+                .filter(x => x.href && x.title); // href/title boşsa at
+
+            const trDate = ts
+                ? new Date(ts).toLocaleString("tr-TR", {
+                    timeZone: "Europe/Istanbul",
+                    year: "numeric",
+                    month: "2-digit",
+                    day: "2-digit",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    second: "2-digit"
+                })
+                : null;
+
+            return {
+                meta: {
+                    id,
+                    name,
+                    uri,
+                    trDate,
+                    to,
+                    mode: mode || "direct",
+                    dbCollection,
+                    dbCollectionPool
+                },
+                newData
+            };
+        },
+
+        async getOldData(databases, meta) {
+            const limit = 100;
+            let offset = 0;
+            let allDocs = [];
+            let keepGoing = true;
+
+            while (keepGoing) {
+                const page = await databases.listDocuments(
+                    APPWRITE_DATABASE_ID,
+                    meta.dbCollection,
+                    [Query.limit(limit), Query.offset(offset)]
+                );
+
+                allDocs = allDocs.concat(page.documents);
+
+                if (page.documents.length < limit) keepGoing = false;
+                else offset += limit;
+            }
+
+            return allDocs.map(doc => ({
+                docId: doc.$id,
+                subfolder: doc.subfolder || "",
+                title: doc.title || "",
+                href: doc.href || "",
+                indir: doc.indir ?? null,
+                ek: doc.ek ?? null
+            }));
+        },
+
+        compare(oldData, newData) {
+            const oldKeys = new Set(oldData.map(i => i.href));
+            const newKeys = new Set(newData.map(i => i.href));
+
+            const added = newData.filter(i => !oldKeys.has(i.href));
+            const removed = oldData.filter(i => !newKeys.has(i.href));
+
+            return { added, removed, changed: [] };
+        },
+
+        async syncDb(databases, oldData, newData, removed, meta) {
+            const byHref = new Map(oldData.map(i => [i.href, i]));
+
+            // removed sil
+            for (let i = 0; i < removed.length; i++) {
+                const item = removed[i];
+                const existing = byHref.get(item.href);
+                if (existing?.docId) {
+                    await withRetry(() =>
+                        databases.deleteDocument(
+                            APPWRITE_DATABASE_ID,
+                            meta.dbCollection,
+                            existing.docId
+                        )
+                    );
+                }
+            }
+
+            // newData uniq (href)
+            const uniq = new Map();
+            for (const item of newData) {
+                if (item.href) uniq.set(item.href, item);
+            }
+            const uniqNewData = Array.from(uniq.values());
+
+            // upsert (href üzerinden)
+            for (let i = 0; i < uniqNewData.length; i++) {
+                const item = uniqNewData[i];
+                const existing = byHref.get(item.href);
+
+                const payload = {
+                    subfolder: item.subfolder,
+                    title: item.title,
+                    href: item.href,
+                    indir: item.indir,
+                    ek: item.ek
+                };
+
+                if (existing?.docId) {
+                    await withRetry(() =>
+                        databases.updateDocument(
+                            APPWRITE_DATABASE_ID,
+                            meta.dbCollection,
+                            existing.docId,
+                            payload
+                        )
+                    );
+                } else {
+                    await withRetry(() =>
+                        databases.createDocument(
+                            APPWRITE_DATABASE_ID,
+                            meta.dbCollection,
+                            ID.unique(),
+                            payload
+                        )
+                    );
+                }
+
+                if ((i + 1) % 10 === 0) await sleep(150);
+            }
+        }
+    },
+
 
     "tcmb_duyurular": {
         // Distill text -> JSON string: [ { id, title, href }, ... ]
