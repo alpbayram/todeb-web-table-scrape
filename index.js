@@ -68,6 +68,28 @@ async function sendReportMail({ meta, added, removed, changed }) {
         }),
     });
 }
+async function enqueueToPool(databases, meta, rawBody) {
+    const poolCollection = rawBody.dbCollectionPool || meta.dbCollectionPool;
+
+    if (!poolCollection) {
+        throw new Error("mode=pool ama dbCollectionPool yok (payload/db).");
+    }
+
+    // rawBody olduğu gibi saklanacak (mail function zaten bunu bekliyor)
+    const payloadString =
+        typeof rawBody === "string" ? rawBody : JSON.stringify(rawBody);
+
+    await databases.createDocument(
+        APPWRITE_DATABASE_ID,
+        poolCollection,
+        ID.unique(),
+        {
+            payload: payloadString,            
+            sourceId: meta?.id || rawBody?.id || null
+        }
+    );
+}
+
 
 // ====================================================
 //  📌 WATCHERS (id -> parser + oldData + compare + sync)
@@ -2136,13 +2158,34 @@ async function run(distillPayload) {
     // 3) compare
     const { added, removed, changed } = watcher.compare(oldData, newData);
 
-    // 4) mail
-    await sendReportMail({ meta, added, removed, changed });
+    // 4) mode kontrolü (default: direct mail)
+    const mode = distillPayload.mode || meta.mode || "direct";
+
+    if (mode === "pool") {
+        // ✅ mail atma, pool'a yaz
+        await enqueueToPool(databases, meta, {
+            // mail function’ın beklediği format aynen:
+            to: meta.to,
+            meta,
+            added,
+            removed,
+            changed,
+
+            // pool’a yazarken trace için (opsiyonel)
+            id: meta.id,
+
+            // pool collection adı (distillPayload’dan zaten geliyor)
+            dbCollectionPool: distillPayload.dbCollectionPool || meta.dbCollectionPool
+        });
+    } else {
+        // ✅ eski davranış aynen devam
+        await sendReportMail({ meta, added, removed, changed });
+    }
 
     // 5) sync
     await watcher.syncDb(databases, oldData, newData, removed, meta);
 
-    return { meta, added, removed, changed };
+    return { meta, added, removed, changed, mode };
 }
 
 // =====================
