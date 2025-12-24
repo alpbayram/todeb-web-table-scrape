@@ -75,19 +75,33 @@ async function enqueueToPool(databases, meta, rawBody) {
         throw new Error("mode=pool ama dbCollectionPool yok (payload/db).");
     }
 
-    // rawBody olduğu gibi saklanacak (mail function zaten bunu bekliyor)
-    const payloadString =
-        typeof rawBody === "string" ? rawBody : JSON.stringify(rawBody);
+    // ✅ Pool’a minimal payload yaz
+    const poolPayloadObj = buildPoolPayload(rawBody);
 
     await databases.createDocument(
         APPWRITE_DATABASE_ID,
         poolCollection,
         ID.unique(),
         {
-            payload: payloadString,
+            payload: JSON.stringify(poolPayloadObj),
+
+            // sourceId: istersen kalsın (opsiyonel)
             sourceId: meta?.id || rawBody?.id || null
         }
     );
+}
+
+function buildPoolPayload({ meta, added, removed /* changed */ }) {
+    return {
+        meta: {
+            name: meta?.name || "",
+            uri: meta?.uri || ""
+            // date yok, id yok, mode yok, dbCollection yok, to yok
+        },
+        added: added || [],
+        removed: removed || []
+        // changed pool'da istemiyorsun -> eklemiyoruz
+    };
 }
 
 
@@ -2309,17 +2323,9 @@ async function run(distillPayload) {
     if (mode === "pool") {
         // ✅ mail atma, pool'a yaz
         await enqueueToPool(databases, meta, {
-            // mail function’ın beklediği format aynen:
-            to: meta.to,
             meta,
             added,
             removed,
-            changed,
-
-            // pool’a yazarken trace için (opsiyonel)
-            id: meta.id,
-
-            // pool collection adı (distillPayload’dan zaten geliyor)
             dbCollectionPool: distillPayload.dbCollectionPool || meta.dbCollectionPool
         });
     } else {
