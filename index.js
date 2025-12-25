@@ -7,6 +7,8 @@ const APPWRITE_ENDPOINT = process.env.APPWRITE_ENDPOINT;
 const APPWRITE_PROJECT_ID = process.env.APPWRITE_PROJECT_ID;
 const APPWRITE_API_KEY = process.env.APPWRITE_API_KEY;
 const APPWRITE_DATABASE_ID = process.env.DATABASE_ID;
+const BDDK_POOL_COLLECTION_ID = process.env.BDDK_POOL_COLLECTION_ID;
+const BDDK_BULK_TO = process.env.BDDK_BULK_TO;
 
 // Mail atan Appwrite Function endpoint’in
 const MAIL_FUNCTION_URL = "https://6909b832001efa359c90.fra.appwrite.run";
@@ -67,6 +69,136 @@ async function sendReportMail({ meta, added, removed, changed }) {
             changed,
         }),
     });
+}
+async function readAllPoolDocs(databases, poolCollection) {
+    const limit = 100;
+    let offset = 0;
+    let allDocs = [];
+    let keepGoing = true;
+
+    while (keepGoing) {
+        const page = await databases.listDocuments(
+            APPWRITE_DATABASE_ID,
+            poolCollection,
+            [Query.limit(limit), Query.offset(offset)]
+        );
+
+        allDocs = allDocs.concat(page.documents);
+
+        if (page.documents.length < limit) keepGoing = false;
+        else offset += limit;
+    }
+
+    return allDocs;
+}
+function parsePoolPayloads(poolDocs) {
+    const payloads = [];
+
+    for (const doc of poolDocs) {
+        const raw = doc.payload; // DB sütunu: payload
+        if (!raw) continue;
+
+        try {
+            const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+            payloads.push(parsed);
+        } catch (e) {
+            // burada ekstra koruma istemediğin için sadece atlıyoruz
+            continue;
+        }
+    }
+
+    return payloads;
+}
+function buildBulkPayloadFromPool(payloads) {
+    const trDate = new Date().toLocaleString("tr-TR", {
+        timeZone: "Europe/Istanbul",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit"
+    });
+
+    // Grup map'leri: name+uri bazında
+    const addedGroups = new Map();
+    const removedGroups = new Map();
+
+    // Top meta
+    const bulk = {
+        meta: {
+            name: "BDDK - Toplu Güncelleme",
+            uri: "https://www.bddk.org.tr",
+            trDate,
+            to: BDDK_BULK_TO || null
+        },
+        added: [],
+        removed: [],
+        changed: []
+    };
+
+    for (const p of payloads) {
+        const srcMeta = p?.meta || {};
+        const groupKey = `${srcMeta.name || ""}__${srcMeta.uri || ""}`;
+
+        // ---- ADDED ----
+        if (Array.isArray(p.added) && p.added.length) {
+            if (!addedGroups.has(groupKey)) {
+                addedGroups.set(groupKey, {
+                    meta: { name: srcMeta.name || "", uri: srcMeta.uri || "" },
+                    items: []
+                });
+            }
+            addedGroups.get(groupKey).items.push(...p.added);
+        }
+
+        // ---- REMOVED ----
+        if (Array.isArray(p.removed) && p.removed.length) {
+            if (!removedGroups.has(groupKey)) {
+                removedGroups.set(groupKey, {
+                    meta: { name: srcMeta.name || "", uri: srcMeta.uri || "" },
+                    items: []
+                });
+            }
+            removedGroups.get(groupKey).items.push(...p.removed);
+        }
+    }
+
+    bulk.added = Array.from(addedGroups.values());
+    bulk.removed = Array.from(removedGroups.values());
+
+    return bulk;
+}
+async function aggregatePoolAndSend(databases) {
+    const poolCollection = BDDK_POOL_COLLECTION_ID;
+    if (!poolCollection) throw new Error("BDDK_POOL_COLLECTION_ID env yok.");
+
+    const poolDocs = await readAllPoolDocs(databases, poolCollection);
+
+    // pool boşsa mail atmayalım (çok basit)
+    if (!poolDocs.length) {
+        return { ok: true, message: "Pool boş, gönderilecek payload yok.", sent: false };
+    }
+
+    const payloads = parsePoolPayloads(poolDocs);
+    const bulkPayload = buildBulkPayloadFromPool(payloads);
+
+    // Mail function'a gönderiyoruz (sendReportMail aynı kalsın)
+    await sendReportMail({
+        meta: bulkPayload.meta,
+        added: bulkPayload.added,
+        removed: bulkPayload.removed,
+        changed: bulkPayload.changed
+    });
+
+    // Gönderdiğimiz şeyler tekrar gitmesin diye pool'u temizle (basit)
+    for (const doc of poolDocs) {
+        await withRetry(() =>
+            databases.deleteDocument(APPWRITE_DATABASE_ID, poolCollection, doc.$id)
+        );
+    }
+
+    return { ok: true, sent: true, pooled_count: poolDocs.length, bulkPayload };
 }
 async function enqueueToPool(databases, meta, rawBody) {
     const poolCollection = rawBody.dbCollectionPool || meta.dbCollectionPool;
@@ -2346,6 +2478,18 @@ export default async ({ req, res, log, error }) => {
     try {
         const body =
             typeof req.body === "string" ? JSON.parse(req.body) : req.body ?? {};
+
+
+        const isEmptyBody =
+            !body ||
+            (typeof body === "object" && Object.keys(body).length === 0);
+
+        // ✅ Manuel çalıştırma: body boşsa pool'dan topla ve mail at
+        if (isEmptyBody) {
+            const { databases } = createClient();
+            const result = await aggregatePoolAndSend(databases);
+            return res.json({ success: true, mode: "pool_aggregate", ...result });
+        }
 
         const result = await run(body);
 
