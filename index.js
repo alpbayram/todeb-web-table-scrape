@@ -127,6 +127,7 @@ function buildBulkPayloadFromPool(payloads) {
     // Top meta
     const bulk = {
         meta: {
+            id: "bddk_pool_aggregate",
             name: "BDDK - Toplu Güncelleme",
             uri: "https://www.bddk.org.tr",
             trDate,
