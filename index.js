@@ -2477,6 +2477,23 @@ async function run(distillPayload) {
 // =====================
 export default async ({ req, res, log, error }) => {
     try {
+        log("=== CRON DEBUG START ===");
+
+        // Body ham hali
+        log(`req.body type: ${typeof req.body}`);
+        log(`req.body raw: ${JSON.stringify(req.body)}`); // boşsa "" görürsün
+
+        // Bazı runtime'larda payload/headers/query farklı isimlerle gelebilir
+        log(`req.headers: ${JSON.stringify(req.headers ?? null)}`);
+        log(`req.query: ${JSON.stringify(req.query ?? null)}`);
+        log(`req.method: ${JSON.stringify(req.method ?? null)}`);
+        log(`req.path: ${JSON.stringify(req.path ?? null)}`);
+        log(`req.url: ${JSON.stringify(req.url ?? null)}`);
+
+        // Context/trigger bilgisi var mı?
+        log(`req:keys: ${JSON.stringify(Object.keys(req ?? {}))}`);
+
+        log("=== CRON DEBUG END ===");
         const body =
             typeof req.body === "string" ? JSON.parse(req.body) : req.body ?? {};
 
