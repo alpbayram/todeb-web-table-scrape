@@ -2477,36 +2477,33 @@ async function run(distillPayload) {
 // =====================
 export default async ({ req, res, log, error }) => {
     try {
-        log("=== CRON DEBUG START ===");
+        const trigger =
+            req.headers?.["x-appwrite-trigger"] ||
+            req.headers?.["X-Appwrite-Trigger"];
 
-        // Body ham hali
-        log(`req.body type: ${typeof req.body}`);
-        log(`req.body raw: ${JSON.stringify(req.body)}`); // boşsa "" görürsün
+        const debug =
+            req.headers?.["x-debug-trigger"] ||
+            req.headers?.["X-Debug-Trigger"];
 
-        // Bazı runtime'larda payload/headers/query farklı isimlerle gelebilir
-        log(`req.headers: ${JSON.stringify(req.headers ?? null)}`);
-        log(`req.query: ${JSON.stringify(req.query ?? null)}`);
-        log(`req.method: ${JSON.stringify(req.method ?? null)}`);
-        log(`req.path: ${JSON.stringify(req.path ?? null)}`);
-        log(`req.url: ${JSON.stringify(req.url ?? null)}`);
+        const isCron = trigger === "schedule" || debug === "test";
 
-        // Context/trigger bilgisi var mı?
-        log(`req:keys: ${JSON.stringify(Object.keys(req ?? {}))}`);
-
-        log("=== CRON DEBUG END ===");
-        const body =
-            typeof req.body === "string" ? JSON.parse(req.body) : req.body ?? {};
-
-
-        const isEmptyBody =
-            !body ||
-            (typeof body === "object" && Object.keys(body).length === 0);
-
-        // ✅ Manuel çalıştırma: body boşsa pool'dan topla ve mail at
-        if (isEmptyBody) {
+        if (isCron) {
             const { databases } = createClient();
             const result = await aggregatePoolAndSend(databases);
-            return res.json({ success: true, mode: "pool_aggregate", ...result });
+
+            return res.json({
+                success: true,
+                mode: "pool_aggregate",
+                triggeredBy: trigger === "schedule" ? "schedule" : "debug",
+                ...result,
+            });
+        }
+
+        // normal çağrı
+        let body = req.body ?? {};
+        if (typeof body === "string") {
+            try { body = JSON.parse(body); }
+            catch { body = {}; }
         }
 
         const result = await run(body);
@@ -2521,7 +2518,8 @@ export default async ({ req, res, log, error }) => {
 
         return res.json({
             success: false,
-            error: err.message ?? String(err),
+            error: err?.message ?? String(err),
         });
     }
 };
+
