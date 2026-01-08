@@ -70,7 +70,7 @@ async function sendReportMail({ meta, added, removed, changed }) {
         }),
     });
 }
-async function readAllPoolDocs(databases, poolCollection) {
+async function readPoolDocsByMetaUri(databases, poolCollection, allowedMetaUris = []) {
     const limit = 100;
     let offset = 0;
     let allDocs = [];
@@ -89,8 +89,30 @@ async function readAllPoolDocs(databases, poolCollection) {
         else offset += limit;
     }
 
-    return allDocs;
+    // allowedMetaUris boşsa hiçbir şey seçme (senin mantık: statik veriyorum, boş kalmaz)
+    if (!Array.isArray(allowedMetaUris) || allowedMetaUris.length === 0) return [];
+
+    // payload.meta.uri üzerinden filtrele
+    const filtered = [];
+    for (const doc of allDocs) {
+        const raw = doc.payload;
+        if (!raw) continue;
+
+        try {
+            const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+            const metaUri = parsed?.meta?.uri || null;
+            if (metaUri && allowedMetaUris.includes(metaUri)) {
+                filtered.push(doc);
+            }
+        } catch (e) {
+            // koruma yok: parse edemediysek geç
+            continue;
+        }
+    }
+
+    return filtered;
 }
+
 function parsePoolPayloads(poolDocs) {
     const payloads = [];
 
@@ -109,7 +131,7 @@ function parsePoolPayloads(poolDocs) {
 
     return payloads;
 }
-function buildBulkPayloadFromPool(payloads) {
+function buildBulkPayloadFromPool(payloads, watcherId) {
     const trDate = new Date().toLocaleString("tr-TR", {
         timeZone: "Europe/Istanbul",
         year: "numeric",
@@ -120,14 +142,12 @@ function buildBulkPayloadFromPool(payloads) {
         second: "2-digit"
     });
 
-    // Grup map'leri: name+uri bazında
     const addedGroups = new Map();
     const removedGroups = new Map();
 
-    // Top meta
     const bulk = {
         meta: {
-            id: "bddk_pool_aggregate",
+            id: watcherId, // ✅ burası artık parametre
             name: "BDDK - Toplu Güncelleme",
             uri: "https://www.bddk.org.tr",
             trDate,
@@ -142,7 +162,6 @@ function buildBulkPayloadFromPool(payloads) {
         const srcMeta = p?.meta || {};
         const groupKey = `${srcMeta.name || ""}__${srcMeta.uri || ""}`;
 
-        // ---- ADDED ----
         if (Array.isArray(p.added) && p.added.length) {
             if (!addedGroups.has(groupKey)) {
                 addedGroups.set(groupKey, {
@@ -153,7 +172,6 @@ function buildBulkPayloadFromPool(payloads) {
             addedGroups.get(groupKey).items.push(...p.added);
         }
 
-        // ---- REMOVED ----
         if (Array.isArray(p.removed) && p.removed.length) {
             if (!removedGroups.has(groupKey)) {
                 removedGroups.set(groupKey, {
@@ -170,37 +188,88 @@ function buildBulkPayloadFromPool(payloads) {
 
     return bulk;
 }
+
 async function aggregatePoolAndSend(databases) {
     const poolCollection = BDDK_POOL_COLLECTION_ID;
     if (!poolCollection) throw new Error("BDDK_POOL_COLLECTION_ID env yok.");
 
-    const poolDocs = await readAllPoolDocs(databases, poolCollection);
+    // ✅ 3 job: uri listelerini sen dolduracaksın
+    const jobs = [
+        {
+            name: "DUYURU",
+            watcherId: "bddk_pool_aggregate_duyuru",
+            allowedMetaUris: [
+                // buraya duyuru meta.uri’leri
+            ],
+        },
+        {
+            name: "MEVZUAT",
+            watcherId: "bddk_pool_aggregate",
+            allowedMetaUris: [
+                "https://www.bddk.org.tr/Mevzuat/Liste/49",
+                "https://www.bddk.org.tr/Mevzuat/Liste/50",
+                "https://www.bddk.org.tr/Mevzuat/Liste/49",
+                "https://www.bddk.org.tr/Mevzuat/Liste/52",
+                "https://www.bddk.org.tr/Mevzuat/Liste/53",
+                "https://www.bddk.org.tr/Mevzuat/Liste/54",
+                "https://www.bddk.org.tr/Mevzuat/Liste/55",
+                "https://www.bddk.org.tr/Mevzuat/Liste/56",
+                "https://www.bddk.org.tr/Mevzuat/Liste/58"
+            ],
+        },
+        {
+            name: "KURULUS",
+            watcherId: "bddk_pool_aggregate_kurulus",
+            allowedMetaUris: [
+                // buraya kuruluş meta.uri’leri
+            ],
+        }
+    ];
 
-    // pool boşsa mail atmayalım (çok basit)
-    if (!poolDocs.length) {
-        return { ok: true, message: "Pool boş, gönderilecek payload yok.", sent: false };
+    const results = [];
+
+    for (const job of jobs) {
+        // 1) sadece bu job’a ait poolDocs’u çek
+        const poolDocs = await readPoolDocsByMetaUri(databases, poolCollection, job.allowedMetaUris);
+
+        // 2) boşsa geç
+        if (!poolDocs.length) {
+            results.push({ job: job.name, ok: true, sent: false, pooled_count: 0 });
+            continue;
+        }
+
+        // 3) payload parse
+        const payloads = parsePoolPayloads(poolDocs);
+
+        // 4) bulk payload build (watcherId job’dan geliyor)
+        const bulkPayload = buildBulkPayloadFromPool(payloads, job.watcherId);
+
+        // 5) mail gönder
+        await sendReportMail({
+            meta: bulkPayload.meta,
+            added: bulkPayload.added,
+            removed: bulkPayload.removed,
+            changed: bulkPayload.changed
+        });
+
+        // 6) sadece seçilen doc’ları sil
+        for (const doc of poolDocs) {
+            await withRetry(() =>
+                databases.deleteDocument(APPWRITE_DATABASE_ID, poolCollection, doc.$id)
+            );
+        }
+
+        results.push({
+            job: job.name,
+            ok: true,
+            sent: true,
+            pooled_count: poolDocs.length
+        });
     }
 
-    const payloads = parsePoolPayloads(poolDocs);
-    const bulkPayload = buildBulkPayloadFromPool(payloads);
-
-    // Mail function'a gönderiyoruz (sendReportMail aynı kalsın)
-    await sendReportMail({
-        meta: bulkPayload.meta,
-        added: bulkPayload.added,
-        removed: bulkPayload.removed,
-        changed: bulkPayload.changed
-    });
-
-    // Gönderdiğimiz şeyler tekrar gitmesin diye pool'u temizle (basit)
-    for (const doc of poolDocs) {
-        await withRetry(() =>
-            databases.deleteDocument(APPWRITE_DATABASE_ID, poolCollection, doc.$id)
-        );
-    }
-
-    return { ok: true, sent: true, pooled_count: poolDocs.length, bulkPayload };
+    return { ok: true, results };
 }
+
 async function enqueueToPool(databases, meta, rawBody) {
     const poolCollection = rawBody.dbCollectionPool || meta.dbCollectionPool;
 
