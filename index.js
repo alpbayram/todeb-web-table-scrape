@@ -131,7 +131,7 @@ function parsePoolPayloads(poolDocs) {
 
     return payloads;
 }
-function buildBulkPayloadFromPool(payloads, watcherId) {
+function buildBulkPayloadFromPool(payloads, job) {
     const trDate = new Date().toLocaleString("tr-TR", {
         timeZone: "Europe/Istanbul",
         year: "numeric",
@@ -147,8 +147,8 @@ function buildBulkPayloadFromPool(payloads, watcherId) {
 
     const bulk = {
         meta: {
-            id: watcherId, // ✅ burası artık parametre
-            name: "BDDK - Toplu Güncelleme",
+            id: job.watcherId, // ✅ burası artık parametre
+            name: job.name,
             uri: "https://www.bddk.org.tr",
             trDate,
             to: BDDK_BULK_TO || null
@@ -196,32 +196,36 @@ async function aggregatePoolAndSend(databases) {
     // ✅ 3 job: uri listelerini sen dolduracaksın
     const jobs = [
         {
-            name: "DUYURU",
+            name: "BDDK - Duyuru Toplu Güncelleme",
             watcherId: "bddk_pool_aggregate_duyuru",
             allowedMetaUris: [
-                // buraya duyuru meta.uri’leri
+                "https://www.bddk.org.tr/Duyuru/Liste/39",
+                "https://www.bddk.org.tr/Duyuru/Liste/40",
+                "https://www.bddk.org.tr/Duyuru/Liste/42",
+                "https://www.bddk.org.tr/Duyuru/Liste/41",
             ],
         },
         {
-            name: "MEVZUAT",
+            name: "BDDK - Mevzuat Toplu Güncelleme",
             watcherId: "bddk_pool_aggregate",
             allowedMetaUris: [
                 "https://www.bddk.org.tr/Mevzuat/Liste/49",
                 "https://www.bddk.org.tr/Mevzuat/Liste/50",
-                "https://www.bddk.org.tr/Mevzuat/Liste/49",
+                "https://www.bddk.org.tr/Mevzuat/Liste/51",
                 "https://www.bddk.org.tr/Mevzuat/Liste/52",
                 "https://www.bddk.org.tr/Mevzuat/Liste/53",
                 "https://www.bddk.org.tr/Mevzuat/Liste/54",
                 "https://www.bddk.org.tr/Mevzuat/Liste/55",
                 "https://www.bddk.org.tr/Mevzuat/Liste/56",
-                "https://www.bddk.org.tr/Mevzuat/Liste/58"
+                "https://www.bddk.org.tr/Mevzuat/Liste/58",
+                "https://www.bddk.org.tr/Mevzuat/Liste/63"
             ],
         },
         {
-            name: "KURULUS",
+            name: "BDDK - Kuruluşlar Toplu Güncelleme",
             watcherId: "bddk_pool_aggregate_kurulus",
             allowedMetaUris: [
-                // buraya kuruluş meta.uri’leri
+
             ],
         }
     ];
@@ -242,7 +246,7 @@ async function aggregatePoolAndSend(databases) {
         const payloads = parsePoolPayloads(poolDocs);
 
         // 4) bulk payload build (watcherId job’dan geliyor)
-        const bulkPayload = buildBulkPayloadFromPool(payloads, job.watcherId);
+        const bulkPayload = buildBulkPayloadFromPool(payloads, job);
 
         // 5) mail gönder
         await sendReportMail({
