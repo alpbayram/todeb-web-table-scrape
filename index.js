@@ -225,7 +225,8 @@ async function aggregatePoolAndSend(databases) {
             name: "BDDK - Kuruluşlar Toplu Güncelleme",
             watcherId: "bddk_pool_aggregate_kurulus",
             allowedMetaUris: [
-
+                "https://www.bddk.org.tr/Kurulus/Liste/77",
+                "https://www.bddk.org.tr/Kurulus/Liste/88"
             ],
         }
     ];
