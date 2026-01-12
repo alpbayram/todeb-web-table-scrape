@@ -1087,6 +1087,109 @@ const WATCHERS = {
             }
         }
     },
+    rekabet_kurumu_kararlar: {
+        parseNewData(distillPayload) {
+            const { id, name, uri, text, ts, to, dbCollection } = distillPayload;
+
+            const arr = JSON.parse(text);
+
+            const newData = arr
+                .map((item) => ({
+                    title: String(item.title || "").replace(/\s+/g, " ").trim(),
+                    href: String(item.href || "").trim(),
+                }))
+                .filter((x) => x.title && x.href);
+
+            const trDate = ts
+                ? new Date(ts).toLocaleString("tr-TR", {
+                    timeZone: "Europe/Istanbul",
+                    year: "numeric",
+                    month: "2-digit",
+                    day: "2-digit",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    second: "2-digit",
+                })
+                : null;
+
+            return {
+                meta: { id, name, uri, trDate, to, dbCollection },
+                newData,
+            };
+        },
+
+        async getOldData(databases, meta) {
+            const limit = 100;
+            let offset = 0;
+            let allDocs = [];
+            let keepGoing = true;
+
+            while (keepGoing) {
+                const page = await databases.listDocuments(
+                    APPWRITE_DATABASE_ID,
+                    meta.dbCollection,
+                    [Query.limit(limit), Query.offset(offset)]
+                );
+
+                allDocs = allDocs.concat(page.documents);
+
+                if (page.documents.length < limit) keepGoing = false;
+                else offset += limit;
+            }
+
+            return allDocs.map((doc) => ({
+                docId: doc.$id,
+                title: doc.title,
+                href: doc.href,
+            }));
+        },
+
+        // ✅ Append-only: sadece yeni geleni bul, "removed" yok say
+        compare(oldData, newData) {
+            const oldHrefs = new Set(oldData.map((i) => i.href));
+            const added = newData.filter((i) => !oldHrefs.has(i.href));
+            return { added, removed: [], changed: [] };
+        },
+
+        // ✅ Append-only: DB'den hiç silme, sadece olmayanı create et
+        async syncDb(databases, oldData, newData, removed, meta) {
+            const oldHrefSet = new Set(oldData.map((i) => i.href));
+
+            // newData uniq (href bazlı)
+            const uniqByHref = new Map();
+            for (const item of newData) {
+                if (item.href) uniqByHref.set(item.href, item);
+            }
+            const uniqNewData = Array.from(uniqByHref.values());
+
+            for (let i = 0; i < uniqNewData.length; i++) {
+                const item = uniqNewData[i];
+
+                if (!oldHrefSet.has(item.href)) {
+                    try {
+                        await withRetry(() =>
+                            databases.createDocument(
+                                APPWRITE_DATABASE_ID,
+                                meta.dbCollection,
+                                ID.unique(),
+                                { title: item.title, href: item.href }
+                            )
+                        );
+                        oldHrefSet.add(item.href); // aynı run içinde tekrar eklenmesin
+                    } catch (e) {
+                        console.log("DB WRITE FAIL ITEM =>", item);
+                        console.log("ERR message =>", e?.message);
+                        console.log("ERR code =>", e?.code);
+                        console.log("ERR type =>", e?.type);
+                        console.log("ERR response =>", e?.response);
+                    }
+                }
+
+                if ((i + 1) % 10 === 0) await sleep(150);
+            }
+        },
+    },
+
     "masak_mevzuat": {
         // DistillPayload.text -> JSON string array: [{ title, href }, ...]
         parseNewData(distillPayload) {
