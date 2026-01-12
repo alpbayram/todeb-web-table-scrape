@@ -1094,10 +1094,15 @@ const WATCHERS = {
             const arr = JSON.parse(text);
 
             const newData = arr
-                .map((item) => ({
-                    title: String(item.title || "").replace(/\s+/g, " ").trim(),
-                    href: String(item.href || "").trim(),
-                }))
+                .map((item) => {
+                    const title = String(item.title || "").replace(/\s+/g, " ").trim();
+                    const href = String(item.href || "").trim();
+
+                    // Distill payload'da varsa al; yoksa null kalsın
+                    const related_href = item.related_href ? String(item.related_href).trim() : null;
+
+                    return { title, href, related_href };
+                })
                 .filter((x) => x.title && x.href);
 
             const trDate = ts
@@ -1141,41 +1146,48 @@ const WATCHERS = {
                 docId: doc.$id,
                 title: doc.title,
                 href: doc.href,
+                related_href: doc.related_href ?? null,
             }));
         },
 
-        // ✅ Append-only: sadece yeni geleni bul, "removed" yok say
         compare(oldData, newData) {
+            // Silme yok -> removed boş dönecek
             const oldHrefs = new Set(oldData.map((i) => i.href));
             const added = newData.filter((i) => !oldHrefs.has(i.href));
+
             return { added, removed: [], changed: [] };
         },
 
-        // ✅ Append-only: DB'den hiç silme, sadece olmayanı create et
         async syncDb(databases, oldData, newData, removed, meta) {
-            const oldHrefSet = new Set(oldData.map((i) => i.href));
+            // Silme yok (removed gelirse bile işlem yapmıyoruz)
+            const oldHrefMap = new Map(oldData.map((i) => [i.href, i]));
 
-            // newData uniq (href bazlı)
+            // newData uniq (href)
             const uniqByHref = new Map();
             for (const item of newData) {
                 if (item.href) uniqByHref.set(item.href, item);
             }
             const uniqNewData = Array.from(uniqByHref.values());
 
+            // sadece olmayanı create et
             for (let i = 0; i < uniqNewData.length; i++) {
                 const item = uniqNewData[i];
+                const existing = oldHrefMap.get(item.href);
 
-                if (!oldHrefSet.has(item.href)) {
+                if (!existing) {
                     try {
                         await withRetry(() =>
                             databases.createDocument(
                                 APPWRITE_DATABASE_ID,
                                 meta.dbCollection,
                                 ID.unique(),
-                                { title: item.title, href: item.href }
+                                {
+                                    title: item.title,
+                                    href: item.href,
+                                    related_href: item.related_href ?? null,
+                                }
                             )
                         );
-                        oldHrefSet.add(item.href); // aynı run içinde tekrar eklenmesin
                     } catch (e) {
                         console.log("DB WRITE FAIL ITEM =>", item);
                         console.log("ERR message =>", e?.message);
@@ -1189,6 +1201,7 @@ const WATCHERS = {
             }
         },
     },
+
 
     "masak_mevzuat": {
         // DistillPayload.text -> JSON string array: [{ title, href }, ...]
