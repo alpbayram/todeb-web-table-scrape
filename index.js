@@ -1121,6 +1121,14 @@ const WATCHERS = {
                 meta: { id, name, uri, trDate, to, dbCollection },
                 newData,
             };
+            // const MAX = 20;
+            // const slicedNewData = newData.slice(0, MAX);
+
+            // return {
+            //     meta: { id, name, uri, trDate, to, dbCollection },
+            //     newData: slicedNewData,
+            // };
+
         },
 
         async getOldData(databases, meta) {
@@ -1322,7 +1330,7 @@ const WATCHERS = {
         }
     },
 
-    "duyurular": {
+    "duyurular_seed": {
         // Distill payload → { meta, newData }
         parseNewData(distillPayload) {
             const { id, name, uri, text, ts, to, dbCollection } = distillPayload;
@@ -1463,6 +1471,133 @@ const WATCHERS = {
                 if (item.href) {
                     payload.href = item.href;
                 }
+
+                if (existing?.docId) {
+                    await databases.updateDocument(
+                        APPWRITE_DATABASE_ID,
+                        meta.dbCollection,
+                        existing.docId,
+                        payload
+                    );
+                } else {
+                    await databases.createDocument(
+                        APPWRITE_DATABASE_ID,
+                        meta.dbCollection,
+                        ID.unique(),
+                        payload
+                    );
+                }
+            }
+        }
+    },
+
+    "duyurular": {
+        // Distill payload → { meta, newData }
+        parseNewData(distillPayload) {
+            const { id, name, uri, text, ts, to, dbCollection } = distillPayload;
+
+            const parsed = JSON.parse(text);
+
+            let arr = [];
+
+            if (Array.isArray(parsed)) {
+                arr = parsed;
+            } else if (
+                parsed &&
+                parsed.resultContainer &&
+                Array.isArray(parsed.resultContainer.content)
+            ) {
+                arr = parsed.resultContainer.content;
+            } else {
+                throw new Error("Beklenmeyen JSON formatı (duyurular watcher)");
+            }
+
+            const newData = arr
+                .map(item => ({
+                    duyuru_id: String(item.id ?? "").trim(),
+                    title: String(item.title ?? "").trim(),
+                    slug: item.slug ? String(item.slug).trim() : null
+                }))
+                .filter(x => x.duyuru_id && x.title);
+
+            // ✅ SADECE İLK 20
+            const MAX = 20;
+            const newDataLimited = newData.slice(0, MAX);
+
+            const trDate = ts
+                ? new Date(ts).toLocaleString("tr-TR", {
+                    timeZone: "Europe/Istanbul",
+                    year: "numeric",
+                    month: "2-digit",
+                    day: "2-digit",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    second: "2-digit"
+                })
+                : null;
+
+            return {
+                meta: { id, name, uri, trDate, to, dbCollection },
+                newData: newDataLimited
+            };
+        },
+
+        // DB → oldData (pagination’lı)
+        async getOldData(databases, meta) {
+            const limit = 100;
+            let offset = 0;
+            let allDocs = [];
+            let keepGoing = true;
+
+            while (keepGoing) {
+                const page = await databases.listDocuments(
+                    APPWRITE_DATABASE_ID,
+                    meta.dbCollection,
+                    [Query.limit(limit), Query.offset(offset)]
+                );
+
+                allDocs = allDocs.concat(page.documents);
+
+                if (page.documents.length < limit) {
+                    keepGoing = false;
+                } else {
+                    offset += limit;
+                }
+            }
+
+            return allDocs.map(doc => ({
+                docId: doc.$id,
+                duyuru_id: doc.duyuru_id,
+                title: doc.title,
+                href: doc.href || null
+            }));
+        },
+
+        // ✅ removed hesaplamıyoruz
+        compare(oldData, newData) {
+            const oldIds = new Set(oldData.map(i => i.duyuru_id));
+
+            const added = newData.filter(i => !oldIds.has(i.duyuru_id));
+            const removed = [];
+            const changed = [];
+
+            return { added, removed, changed };
+        },
+
+        // ✅ DB silme yok (sadece upsert)
+        async syncDb(databases, oldData, newData, removed, meta) {
+            const oldMap = new Map(oldData.map(i => [i.duyuru_id, i]));
+
+            for (let i = 0; i < newData.length; i++) {
+                const item = newData[i];
+                const existing = oldMap.get(item.duyuru_id);
+
+                const payload = {
+                    duyuru_id: item.duyuru_id,
+                    title: item.title
+                };
+
+                if (item.href) payload.href = item.href;
 
                 if (existing?.docId) {
                     await databases.updateDocument(
