@@ -1329,6 +1329,177 @@ const WATCHERS = {
             }
         }
     },
+    "vergi_mevzuati": {
+        // Distill payload -> { meta, newData }
+        parseNewData(distillPayload) {
+            const { id, name, uri, text, ts, to, dbCollection } = distillPayload;
+
+            const parsed = JSON.parse(text || "{}");
+
+            const results = Array.isArray(parsed?.resultContainer?.results)
+                ? parsed.resultContainer.results
+                : [];
+
+            function buildMevzuatId(item) {
+                const url = item.url || "";
+                const match = url.match(/\/(\d+)$/); // sondaki sayı
+                if (!match) return null;
+
+                const urlId = match[1];
+                const entityType = String(item.entityType || "GENERIC").toUpperCase();
+                return `${entityType}_${urlId}`;
+            }
+
+            const newDataRaw = results.map(item => {
+                const mevzuat_id = buildMevzuatId(item);
+                const title = String(item.text || "").trim();
+
+                // URL zaten tam geliyorsa direkt kullanıyoruz
+                const rawUrl = item.url || "";
+                const href = rawUrl
+                    ? (rawUrl.startsWith("http")
+                        ? rawUrl
+                        : `https://gib.gov.tr${rawUrl}`)
+                    : null;
+
+                return {
+                    mevzuat_id,
+                    title,
+                    href
+                };
+            });
+
+            // id veya title olmayanları at
+            const newData = newDataRaw.filter(x => x.mevzuat_id && x.title);
+
+            // ✅ sadece ilk 20'yi kullan
+            const MAX = 5;
+            const newDataLimited = newData.slice(0, MAX);
+
+            const trDate = ts
+                ? new Date(ts).toLocaleString("tr-TR", {
+                    timeZone: "Europe/Istanbul",
+                    year: "numeric",
+                    month: "2-digit",
+                    day: "2-digit",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    second: "2-digit"
+                })
+                : null;
+
+            return {
+                meta: { id, name, uri, trDate, to, dbCollection },
+                newData: newDataLimited
+            };
+        },
+
+        async getOldData(databases, meta) {
+            const limit = 100;
+            let offset = 0;
+            let allDocs = [];
+            let keepGoing = true;
+
+            while (keepGoing) {
+                const page = await databases.listDocuments(
+                    APPWRITE_DATABASE_ID,
+                    meta.dbCollection,
+                    [Query.limit(limit), Query.offset(offset)]
+                );
+
+                allDocs = allDocs.concat(page.documents);
+
+                if (page.documents.length < limit) {
+                    keepGoing = false;
+                } else {
+                    offset += limit;
+                }
+            }
+
+            return allDocs.map(doc => ({
+                docId: doc.$id,
+                mevzuat_id: doc.mevzuat_id,
+                title: doc.title
+                // href DB'de yok, bilinçli olarak almıyoruz
+            }));
+        },
+
+        compare(oldData, newData) {
+            const oldIds = new Set(oldData.map(i => i.mevzuat_id));
+
+            const added = newData.filter(i => !oldIds.has(i.mevzuat_id));
+
+            // ✅ removed kapalı (kısıtlı liste probleminden kaçınmak için)
+            const removed = [];
+
+            // Şimdilik changed takibi yok
+            const changed = [];
+
+            return { added, removed, changed };
+        },
+
+        async syncDb(databases, oldData, newData, removed, meta) {
+            const oldMap = new Map(oldData.map(i => [i.mevzuat_id, i]));
+
+            // ✅ removed silme BLOĞU KALDIRILDI
+
+            // newData uniq (mevzuat_id bazlı)
+            const uniqMap = new Map();
+            for (const item of newData) {
+                if (item.mevzuat_id) {
+                    uniqMap.set(item.mevzuat_id, {
+                        mevzuat_id: item.mevzuat_id,
+                        title: item.title
+                        // href DB'ye gitmiyor
+                    });
+                }
+            }
+            const uniqNewData = Array.from(uniqMap.values());
+
+            // upsert
+            for (let i = 0; i < uniqNewData.length; i++) {
+                const item = uniqNewData[i];
+                const existing = oldMap.get(item.mevzuat_id);
+
+                const payload = {
+                    mevzuat_id: item.mevzuat_id,
+                    title: item.title
+                };
+
+                try {
+                    if (existing?.docId) {
+                        await withRetry(() =>
+                            databases.updateDocument(
+                                APPWRITE_DATABASE_ID,
+                                meta.dbCollection,
+                                existing.docId,
+                                payload
+                            )
+                        );
+                    } else {
+                        await withRetry(() =>
+                            databases.createDocument(
+                                APPWRITE_DATABASE_ID,
+                                meta.dbCollection,
+                                ID.unique(),
+                                payload
+                            )
+                        );
+                    }
+                } catch (e) {
+                    console.log("DB WRITE FAIL ITEM =>", item);
+                    console.log("ERR message =>", e?.message);
+                    console.log("ERR code =>", e?.code);
+                    console.log("ERR type =>", e?.type);
+                    console.log("ERR response =>", e?.response);
+                }
+
+                if ((i + 1) % 10 === 0) {
+                    await sleep(150);
+                }
+            }
+        }
+    },
 
     "duyurular_seed": {
         // Distill payload → { meta, newData }
@@ -1618,7 +1789,7 @@ const WATCHERS = {
         }
     },
 
-    "vergi_mevzuati": {
+    "vergi_mevzuati_seed": {
         // Distill payload -> { meta, newData }
         parseNewData(distillPayload) {
             const { id, name, uri, text, ts, to, dbCollection } = distillPayload;
@@ -2003,8 +2174,155 @@ const WATCHERS = {
     },
     // WATCHERS içine ekle:
     //  "masak_basin_duyuru": { ... }
-
     "masak_basin_duyuru": {
+        parseNewData(distillPayload) {
+            const { id, name, uri, text, ts, to, dbCollection } = distillPayload;
+
+            const arr = JSON.parse(text);
+
+            if (!Array.isArray(arr)) {
+                throw new Error("Beklenmeyen JSON formatı (masak_basin_duyuru)");
+            }
+
+            const BASE_URL = "https://masak.hmb.gov.tr/duyuru/";
+
+            const newDataRaw = arr
+                .map(item => {
+                    const duyuruId = String(item.id ?? "").trim();
+                    const slug = item.slug || "";
+                    const href = slug ? `${BASE_URL}${slug}/` : null;
+
+                    const rawTitle =
+                        (item.title && item.title.rendered) ||
+                        item.title ||
+                        "";
+
+                    const title = String(rawTitle).trim();
+
+                    return {
+                        duyuru_id: duyuruId,
+                        title,
+                        slug,
+                        href
+                    };
+                })
+                .filter(x => x.duyuru_id && x.title);
+
+            // ✅ sadece ilk 20
+            const MAX = 20;
+            const newData = newDataRaw.slice(0, MAX);
+
+            const trDate = ts
+                ? new Date(ts).toLocaleString("tr-TR", {
+                    timeZone: "Europe/Istanbul",
+                    year: "numeric",
+                    month: "2-digit",
+                    day: "2-digit",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    second: "2-digit"
+                })
+                : null;
+
+            return {
+                meta: { id, name, uri, trDate, to, dbCollection },
+                newData
+            };
+        },
+
+        async getOldData(databases, meta) {
+            const limit = 100;
+            let offset = 0;
+            let allDocs = [];
+            let keepGoing = true;
+
+            while (keepGoing) {
+                const page = await databases.listDocuments(
+                    APPWRITE_DATABASE_ID,
+                    meta.dbCollection,
+                    [Query.limit(limit), Query.offset(offset)]
+                );
+
+                allDocs = allDocs.concat(page.documents);
+
+                if (page.documents.length < limit) {
+                    keepGoing = false;
+                } else {
+                    offset += limit;
+                }
+            }
+
+            return allDocs.map(doc => ({
+                docId: doc.$id,
+                duyuru_id: doc.duyuru_id,
+                title: doc.title
+            }));
+        },
+
+        compare(oldData, newData) {
+            const oldIds = new Set(oldData.map(i => i.duyuru_id));
+
+            const added = newData.filter(i => !oldIds.has(i.duyuru_id));
+
+            // ✅ removed kapalı (kısıtlı liste yüzünden false positive istemiyoruz)
+            const removed = [];
+
+            const changed = [];
+
+            return { added, removed, changed };
+        },
+
+        async syncDb(databases, oldData, newData, removed, meta) {
+            const oldMap = new Map(oldData.map(i => [i.duyuru_id, i]));
+
+            // ✅ removed silme BLOĞU KALDIRILDI
+
+            // --- newData uniq (aynı duyuru_id iki kere geldiyse sonuncuyu al) ---
+            const uniqMap = new Map();
+            for (const item of newData) {
+                if (item.duyuru_id) {
+                    uniqMap.set(item.duyuru_id, item);
+                }
+            }
+            const uniqNewData = Array.from(uniqMap.values());
+
+            // --- sadece DB'de olmayanları create et (title doldur) ---
+            for (let i = 0; i < uniqNewData.length; i++) {
+                const item = uniqNewData[i];
+                const existing = oldMap.get(item.duyuru_id);
+
+                if (!existing) {
+                    const payload = {
+                        duyuru_id: item.duyuru_id,
+                        title: item.title
+                    };
+
+                    try {
+                        await withRetry(() =>
+                            databases.createDocument(
+                                APPWRITE_DATABASE_ID,
+                                meta.dbCollection,
+                                ID.unique(),
+                                payload
+                            )
+                        );
+                    } catch (e) {
+                        console.log("DB WRITE FAIL ITEM =>", item);
+                        console.log("ERR message =>", e?.message);
+                        console.log("ERR code =>", e?.code);
+                        console.log("ERR type =>", e?.type);
+                        console.log("ERR response =>", e?.response);
+                    }
+                }
+
+                if ((i + 1) % 10 === 0) {
+                    await sleep(150);
+                }
+            }
+        }
+    },
+
+    "masak_basin_duyuru_seed": {
         parseNewData(distillPayload) {
             const { id, name, uri, text, ts, to, dbCollection } = distillPayload;
 
