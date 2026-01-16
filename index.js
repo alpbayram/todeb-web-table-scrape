@@ -1332,7 +1332,7 @@ const WATCHERS = {
     "vergi_mevzuati": {
         // Distill payload -> { meta, newData }
         parseNewData(distillPayload) {
-            const { id, name, uri, text, ts, to, dbCollection } = distillPayload;
+            const { id, name, uri, text, ts, to, dbCollection,mode } = distillPayload;
 
             const parsed = JSON.parse(text || "{}");
 
@@ -1373,8 +1373,8 @@ const WATCHERS = {
             const newData = newDataRaw.filter(x => x.mevzuat_id && x.title);
 
             // ✅ sadece ilk 20'yi kullan
-            const MAX = 5;
-            const newDataLimited = newData.slice(0, MAX);
+            const LIMIT = 5; // veya 20 ne istiyorsan
+            const finalNewData = mode === "seed" ? newData : newData.slice(0, LIMIT);
 
             const trDate = ts
                 ? new Date(ts).toLocaleString("tr-TR", {
@@ -1390,7 +1390,7 @@ const WATCHERS = {
 
             return {
                 meta: { id, name, uri, trDate, to, dbCollection },
-                newData: newDataLimited
+                newData: finalNewData
             };
         },
 
