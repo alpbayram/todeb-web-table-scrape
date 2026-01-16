@@ -2177,7 +2177,7 @@ const WATCHERS = {
     //  "masak_basin_duyuru": { ... }
     "masak_basin_duyuru": {
         parseNewData(distillPayload) {
-            const { id, name, uri, text, ts, to, dbCollection } = distillPayload;
+            const { id, name, uri, text, ts, to, dbCollection, mode } = distillPayload;
 
             const arr = JSON.parse(text);
 
@@ -2211,7 +2211,7 @@ const WATCHERS = {
 
             // ✅ sadece ilk 20
             const LIMIT = 10;
-            const finalNewData = mode === "seed" ? newData : newData.slice(0, LIMIT);
+            const finalNewData = mode === "seed" ? newDataRaw : newDataRaw.slice(0, LIMIT);
 
             const trDate = ts
                 ? new Date(ts).toLocaleString("tr-TR", {
