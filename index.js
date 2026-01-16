@@ -1692,8 +1692,9 @@ const WATCHERS = {
                 .filter(x => x.duyuru_id && x.title);
 
             // ✅ SADECE İLK 20
-            const MAX = 20;
-            const newDataLimited = newData.slice(0, MAX);
+            const LIMIT = 10; // veya 20 ne istiyorsan
+            const finalNewData = mode === "seed" ? newData : newData.slice(0, LIMIT);
+
 
             const trDate = ts
                 ? new Date(ts).toLocaleString("tr-TR", {
@@ -1709,7 +1710,7 @@ const WATCHERS = {
 
             return {
                 meta: { id, name, uri, trDate, to, dbCollection },
-                newData: newDataLimited
+                newData: finalNewData
             };
         },
 
@@ -3094,6 +3095,7 @@ async function run(distillPayload) {
     const { added, removed, changed } = watcher.compare(oldData, newData);
 
     // 4) mode kontrolü (default: direct mail)
+    // 4) mode kontrolü (default: direct mail)
     const mode = distillPayload.mode || meta.mode || "direct";
 
     if (mode === "pool") {
@@ -3104,10 +3106,14 @@ async function run(distillPayload) {
             removed,
             dbCollectionPool: distillPayload.dbCollectionPool || meta.dbCollectionPool
         });
+    } else if (mode === "seed") {
+        // ✅ seed: mail atma, sadece sync ile DB’yi doldur
+        // nothing
     } else {
-        // ✅ eski davranış aynen devam
+        // ✅ direct: eski davranış aynen devam
         await sendReportMail({ meta, added, removed, changed });
     }
+
 
     // 5) sync
     await watcher.syncDb(databases, oldData, newData, removed, meta);
