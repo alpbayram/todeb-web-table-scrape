@@ -1665,7 +1665,7 @@ const WATCHERS = {
     "duyurular": {
         // Distill payload → { meta, newData }
         parseNewData(distillPayload) {
-            const { id, name, uri, text, ts, to, dbCollection } = distillPayload;
+            const { id, name, uri, text, ts, to, dbCollection, mode } = distillPayload;
 
             const parsed = JSON.parse(text);
 
@@ -3082,8 +3082,7 @@ async function run(distillPayload) {
             `Bu Distill ID için watcher tanımlı değil: ${distillPayload.id}`
         );
     }
- // 4) mode kontrolü (default: direct mail)
-    const mode = distillPayload.mode || meta.mode || "direct";
+
     const { databases } = createClient();
 
     // 1) payload -> meta + newData
@@ -3096,7 +3095,8 @@ async function run(distillPayload) {
     const { added, removed, changed } = watcher.compare(oldData, newData);
 
     // 4) mode kontrolü (default: direct mail)
-   
+    // 4) mode kontrolü (default: direct mail)
+    const mode = distillPayload.mode || meta.mode || "direct";
 
     if (mode === "pool") {
         // ✅ mail atma, pool'a yaz
