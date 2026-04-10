@@ -163,6 +163,19 @@ function parsePossiblyConcatenatedJson(text, watcherName = "watcher") {
     }
 }
 
+function getIstanbulDayKey(value = Date.now()) {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+        timeZone: "Europe/Istanbul",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit"
+    }).formatToParts(new Date(value));
+
+    const get = (type) => parts.find(part => part.type === type)?.value || "";
+
+    return `${get("year")}-${get("month")}-${get("day")}`;
+}
+
 async function sendReportMail({ meta, added, removed, changed }) {
     await fetch(MAIL_FUNCTION_URL, {
         method: "POST",
@@ -3057,6 +3070,178 @@ const WATCHERS = {
         }
     },
 
+
+    "resmi_gazete_gunluk": {
+        parseNewData(distillPayload) {
+            const { id, name, uri, text, ts, to, dbCollection } = distillPayload;
+
+            const parsed = parsePossiblyConcatenatedJson(text, "resmi_gazete_gunluk");
+            const arr = Array.isArray(parsed) ? parsed : [];
+
+            const gunKey = getIstanbulDayKey(ts || Date.now());
+
+            const normalized = arr
+                .map((item, index) => {
+                    const href = String(item?.href || "").trim();
+                    const title = String(item?.title || "").replace(/\s+/g, " ").trim();
+                    const bolum = String(item?.bolum || "").replace(/\s+/g, " ").trim();
+
+                    let altBaslik = item?.alt_baslik;
+                    if (altBaslik == null) {
+                        altBaslik = null;
+                    } else {
+                        altBaslik = String(altBaslik).replace(/\s+/g, " ").trim() || null;
+                    }
+
+                    const rawSortIndex = Number(item?.sort_index);
+                    const sortIndex = Number.isFinite(rawSortIndex) ? rawSortIndex : index;
+
+                    if (!href || !title) return null;
+
+                    return {
+                        gun_key: gunKey,
+                        item_key: href,
+                        bolum,
+                        alt_baslik: altBaslik,
+                        title,
+                        href,
+                        sort_index: sortIndex
+                    };
+                })
+                .filter(Boolean);
+
+            const uniqMap = new Map();
+            for (const item of normalized) {
+                uniqMap.set(item.item_key, item);
+            }
+
+            const newData = [...uniqMap.values()].sort((a, b) => a.sort_index - b.sort_index);
+
+            const trDate = ts
+                ? new Date(ts).toLocaleString("tr-TR", {
+                    timeZone: "Europe/Istanbul",
+                    year: "numeric",
+                    month: "2-digit",
+                    day: "2-digit",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    second: "2-digit"
+                })
+                : null;
+
+            return {
+                meta: { id, name, uri, trDate, to, dbCollection, gunKey },
+                newData
+            };
+        },
+
+        async getOldData(databases, meta) {
+            const limit = 100;
+            let offset = 0;
+            let allDocs = [];
+            let keepGoing = true;
+
+            while (keepGoing) {
+                const page = await databases.listDocuments(
+                    APPWRITE_DATABASE_ID,
+                    meta.dbCollection,
+                    [Query.limit(limit), Query.offset(offset)]
+                );
+
+                allDocs = allDocs.concat(page.documents);
+
+                if (page.documents.length < limit) {
+                    keepGoing = false;
+                } else {
+                    offset += limit;
+                }
+            }
+
+            return allDocs.map(doc => ({
+                docId: doc.$id,
+                gun_key: doc.gun_key || null,
+                item_key: doc.item_key || doc.href || null,
+                bolum: doc.bolum || "",
+                alt_baslik: doc.alt_baslik || null,
+                title: doc.title || "",
+                href: doc.href || null,
+                sort_index: Number.isFinite(Number(doc.sort_index))
+                    ? Number(doc.sort_index)
+                    : Number.MAX_SAFE_INTEGER
+            }));
+        },
+
+        compare(oldData, newData) {
+            const currentGunKey = newData[0]?.gun_key || getIstanbulDayKey();
+            const sameDayOld = oldData.filter(item => item.gun_key === currentGunKey);
+            const oldKeys = new Set(sameDayOld.map(item => item.item_key));
+
+            const added = newData.filter(item => !oldKeys.has(item.item_key));
+
+            return { added, removed: [], changed: [] };
+        },
+
+        async syncDb(databases, oldData, newData, removed, meta) {
+            const sameDayOld = oldData.filter(item => item.gun_key === meta.gunKey);
+            const oldMap = new Map(sameDayOld.map(item => [item.item_key, item]));
+
+            for (const item of oldData) {
+                if (item.gun_key === meta.gunKey) continue;
+                if (!item.docId) continue;
+
+                await withRetry(() =>
+                    databases.deleteDocument(
+                        APPWRITE_DATABASE_ID,
+                        meta.dbCollection,
+                        item.docId
+                    )
+                );
+            }
+
+            const uniqMap = new Map();
+            for (const item of newData) {
+                if (item.item_key) uniqMap.set(item.item_key, item);
+            }
+            const uniqNewData = [...uniqMap.values()].sort((a, b) => a.sort_index - b.sort_index);
+
+            for (let i = 0; i < uniqNewData.length; i++) {
+                const item = uniqNewData[i];
+                const existing = oldMap.get(item.item_key);
+
+                const payload = {
+                    gun_key: item.gun_key,
+                    item_key: item.item_key,
+                    bolum: item.bolum,
+                    alt_baslik: item.alt_baslik,
+                    title: item.title,
+                    href: item.href,
+                    sort_index: item.sort_index
+                };
+
+                if (existing?.docId) {
+                    await withRetry(() =>
+                        databases.updateDocument(
+                            APPWRITE_DATABASE_ID,
+                            meta.dbCollection,
+                            existing.docId,
+                            payload
+                        )
+                    );
+                } else {
+                    await withRetry(() =>
+                        databases.createDocument(
+                            APPWRITE_DATABASE_ID,
+                            meta.dbCollection,
+                            ID.unique(),
+                            payload
+                        )
+                    );
+                }
+
+                if ((i + 1) % 10 === 0) await sleep(150);
+            }
+        }
+    },
 
     "tcmb_duyurular": {
         // Distill text -> JSON string: [ { id, title, href }, ... ]
