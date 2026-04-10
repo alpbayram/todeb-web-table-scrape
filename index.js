@@ -105,6 +105,33 @@ function extractTopLevelJsonSegments(text) {
     return segments;
 }
 
+function isPlainObject(value) {
+    return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function mergeJsonValues(left, right) {
+    if (Array.isArray(left) && Array.isArray(right)) {
+        return [...left, ...right];
+    }
+
+    if (isPlainObject(left) && isPlainObject(right)) {
+        const merged = { ...left };
+
+        for (const [key, value] of Object.entries(right)) {
+            if (!(key in merged)) {
+                merged[key] = value;
+                continue;
+            }
+
+            merged[key] = mergeJsonValues(merged[key], value);
+        }
+
+        return merged;
+    }
+
+    return right;
+}
+
 function parsePossiblyConcatenatedJson(text, watcherName = "watcher") {
     try {
         return JSON.parse(text);
@@ -123,6 +150,13 @@ function parsePossiblyConcatenatedJson(text, watcherName = "watcher") {
 
         if (parsedSegments.every(Array.isArray)) {
             return parsedSegments.flat();
+        }
+
+        if (parsedSegments.every(isPlainObject)) {
+            return parsedSegments.reduce(
+                (acc, current) => mergeJsonValues(acc, current),
+                {}
+            );
         }
 
         throw new Error(`Beklenmeyen birlesik JSON formati (${watcherName})`);
@@ -397,7 +431,7 @@ const WATCHERS = {
         parseNewData(distillPayload) {
             const { id, name, uri, text, ts, to, dbCollection } = distillPayload;
 
-            const arr = JSON.parse(text);
+            const arr = parsePossiblyConcatenatedJson(text, "tcmb_odeme_kuruluslari");
 
             const newData = arr.map((item) => ({
                 kurulus_kodu: String(item.code).trim(),
@@ -595,7 +629,10 @@ const WATCHERS = {
                 dbCollectionHtml
             } = distillPayload;
 
-            const root = JSON.parse(text || "{}");
+            const root = parsePossiblyConcatenatedJson(
+                text || "{}",
+                "tcmb_odeme_kuruluslari_table_paragraf"
+            );
             const tableArr = Array.isArray(root.table) ? root.table : [];
             const htmlArr = Array.isArray(root.html) ? root.html : [];
             const htmlRaw = htmlArr[0] || root.html || "";
@@ -918,7 +955,10 @@ const WATCHERS = {
 
             // Distill JS şunu dönüyor:
             // [ { id: "...uuid...", title: "...", href: "https://..." }, ... ]
-            const arr = JSON.parse(text);
+            const arr = parsePossiblyConcatenatedJson(
+                text,
+                "tcmb_odeme_sistemleri_ile_ilgili_mevzuat"
+            );
 
             const newData = arr
                 .map(item => ({
@@ -1164,7 +1204,7 @@ const WATCHERS = {
         parseNewData(distillPayload) {
             const { id, name, uri, text, ts, to, dbCollection } = distillPayload;
 
-            const arr = JSON.parse(text);
+            const arr = parsePossiblyConcatenatedJson(text, "rekabet_kurumu_kararlar");
 
             const newData = arr
                 .map((item) => {
@@ -1289,7 +1329,7 @@ const WATCHERS = {
         parseNewData(distillPayload) {
             const { id, name, uri, text, ts, to, dbCollection } = distillPayload;
 
-            const arr = JSON.parse(text);
+            const arr = parsePossiblyConcatenatedJson(text, "masak_mevzuat");
 
             // newData: href + title
             const newDataRaw = (Array.isArray(arr) ? arr : [])
@@ -1407,7 +1447,7 @@ const WATCHERS = {
         parseNewData(distillPayload) {
             const { id, name, uri, text, ts, to, dbCollection, mode } = distillPayload;
 
-            const parsed = JSON.parse(text || "{}");
+            const parsed = parsePossiblyConcatenatedJson(text || "{}", "vergi_mevzuati");
 
             const results = Array.isArray(parsed?.resultContainer?.results)
                 ? parsed.resultContainer.results
@@ -1589,7 +1629,7 @@ const WATCHERS = {
             //     ]
             //   }
             // }
-            const parsed = JSON.parse(text);
+            const parsed = parsePossiblyConcatenatedJson(text, "duyurular_seed");
 
             let arr = [];
 
@@ -1740,7 +1780,7 @@ const WATCHERS = {
         parseNewData(distillPayload) {
             const { id, name, uri, text, ts, to, dbCollection, mode } = distillPayload;
 
-            const parsed = JSON.parse(text);
+            const parsed = parsePossiblyConcatenatedJson(text, "duyurular");
 
             let arr = [];
 
@@ -1868,7 +1908,7 @@ const WATCHERS = {
         parseNewData(distillPayload) {
             const { id, name, uri, text, ts, to, dbCollection } = distillPayload;
 
-            const parsed = JSON.parse(text || "{}");
+            const parsed = parsePossiblyConcatenatedJson(text || "{}", "vergi_mevzuati_seed");
 
             const results = Array.isArray(parsed?.resultContainer?.results)
                 ? parsed.resultContainer.results
@@ -2062,7 +2102,7 @@ const WATCHERS = {
         parseNewData(distillPayload) {
             const { id, name, uri, text, ts, to, dbCollection } = distillPayload;
 
-            const parsed = JSON.parse(text);
+            const parsed = parsePossiblyConcatenatedJson(text, "gib_taslaklar");
 
             let arr = [];
             if (Array.isArray(parsed)) {
@@ -2252,7 +2292,7 @@ const WATCHERS = {
         parseNewData(distillPayload) {
             const { id, name, uri, text, ts, to, dbCollection, mode } = distillPayload;
 
-            const arr = JSON.parse(text);
+            const arr = parsePossiblyConcatenatedJson(text, "masak_basin_duyuru");
 
             if (!Array.isArray(arr)) {
                 throw new Error("Beklenmeyen JSON formatı (masak_basin_duyuru)");
@@ -2405,7 +2445,7 @@ const WATCHERS = {
             //   { id: 5543, slug: "...", title: { rendered: "..." } },
             //   ...
             // ]
-            const arr = JSON.parse(text);
+            const arr = parsePossiblyConcatenatedJson(text, "masak_basin_duyuru_seed");
 
             if (!Array.isArray(arr)) {
                 throw new Error("Beklenmeyen JSON formatı (masak_basin_duyuru)");
@@ -2568,7 +2608,7 @@ const WATCHERS = {
         parseNewData(distillPayload) {
             const { id, name, uri, text, ts, to, dbCollection } = distillPayload;
 
-            const parsed = JSON.parse(text);
+            const parsed = parsePossiblyConcatenatedJson(text, "gib_kkdf");
             const arr = parsed?.resultContainer?.content || [];
 
             const baseUrl = "https://gib.gov.tr/mevzuat/kkdf";
@@ -2696,7 +2736,7 @@ const WATCHERS = {
         parseNewData(distillPayload) {
             const { id, name, uri, text, ts, to, dbCollection } = distillPayload;
 
-            const parsed = JSON.parse(text);
+            const parsed = parsePossiblyConcatenatedJson(text, "gib_uluslararasi_mevzuat");
 
             let arr = [];
 
@@ -2873,7 +2913,10 @@ const WATCHERS = {
         parseNewData(distillPayload) {
             const { id, name, uri, text, ts, to, mode, dbCollection, dbCollectionPool } = distillPayload;
 
-            const arr = JSON.parse(text); // [{subfolder,title,href,indir,ek}, ...]
+            const arr = parsePossiblyConcatenatedJson(
+                text,
+                "bddk_mevzuat_mode_pool_test"
+            ); // [{subfolder,title,href,indir,ek}, ...]
 
             const newData = (Array.isArray(arr) ? arr : [])
                 .map(item => ({
