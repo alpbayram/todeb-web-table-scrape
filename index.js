@@ -56,6 +56,79 @@ async function withRetry(fn, { retries = 3, baseDelay = 250 } = {}) {
 // =====================
 //  MAIL FUNCTION ÇAĞIRMA
 // =====================
+function extractTopLevelJsonSegments(text) {
+    const source = String(text || "").trim();
+    const segments = [];
+
+    let start = -1;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+
+    for (let i = 0; i < source.length; i++) {
+        const ch = source[i];
+
+        if (inString) {
+            if (escaped) {
+                escaped = false;
+            } else if (ch === "\\") {
+                escaped = true;
+            } else if (ch === "\"") {
+                inString = false;
+            }
+            continue;
+        }
+
+        if (ch === "\"") {
+            inString = true;
+            continue;
+        }
+
+        if (ch === "{" || ch === "[") {
+            if (depth === 0) start = i;
+            depth++;
+            continue;
+        }
+
+        if (ch === "}" || ch === "]") {
+            if (depth === 0) continue;
+
+            depth--;
+
+            if (depth === 0 && start !== -1) {
+                segments.push(source.slice(start, i + 1));
+                start = -1;
+            }
+        }
+    }
+
+    return segments;
+}
+
+function parsePossiblyConcatenatedJson(text, watcherName = "watcher") {
+    try {
+        return JSON.parse(text);
+    } catch (firstError) {
+        const segments = extractTopLevelJsonSegments(text);
+
+        if (!segments.length) {
+            throw firstError;
+        }
+
+        const parsedSegments = segments.map(segment => JSON.parse(segment));
+
+        if (parsedSegments.length === 1) {
+            return parsedSegments[0];
+        }
+
+        if (parsedSegments.every(Array.isArray)) {
+            return parsedSegments.flat();
+        }
+
+        throw new Error(`Beklenmeyen birlesik JSON formati (${watcherName})`);
+    }
+}
+
 async function sendReportMail({ meta, added, removed, changed }) {
     await fetch(MAIL_FUNCTION_URL, {
         method: "POST",
@@ -2947,9 +3020,10 @@ const WATCHERS = {
         parseNewData(distillPayload) {
             const { id, name, uri, text, ts, to, dbCollection } = distillPayload;
 
-            const arr = JSON.parse(text);
+            const parsed = parsePossiblyConcatenatedJson(text, "tcmb_duyurular");
+            const arr = Array.isArray(parsed) ? parsed : [];
 
-            const newData = arr
+            const normalized = arr
                 .map(item => ({
                     duyuru_id: String(item.id || "").trim(),
                     title: String(item.title || "").trim(),
@@ -2958,6 +3032,13 @@ const WATCHERS = {
                 }))
                 // hem id hem title dolu olmalı
                 .filter(x => x.duyuru_id && x.title);
+
+            const uniqMap = new Map();
+            for (const item of normalized) {
+                uniqMap.set(item.duyuru_id, item);
+            }
+
+            const newData = [...uniqMap.values()];
 
             const trDate = ts
                 ? new Date(ts).toLocaleString("tr-TR", {
@@ -3171,4 +3252,3 @@ export default async ({ req, res, log, error }) => {
         });
     }
 };
-
