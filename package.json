@@ -4,7 +4,6 @@
   "type": "module",
   "main": "src/index.js",
   "dependencies": {
-    "node-appwrite": "^13.0.0",
-    "cheerio": "^1.0.0"
+    "node-appwrite": "^13.0.0"
   }
 }
