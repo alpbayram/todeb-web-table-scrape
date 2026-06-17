@@ -27,6 +27,148 @@ function createClient() {
     return { client, databases };
 }
 
+const LOG_MAX_STRING = 1000;
+const LOG_PREVIEW_ITEMS = 3;
+const LOG_PREVIEW_KEYS = 6;
+
+function truncateLogString(value, max = LOG_MAX_STRING) {
+    const text = String(value ?? "");
+    return text.length > max ? `${text.slice(0, max)}... [truncated ${text.length - max} chars]` : text;
+}
+
+function pickPreviewFields(item) {
+    if (item == null) return item;
+    if (typeof item !== "object") return truncateLogString(item, 240);
+    if (Array.isArray(item)) {
+        return item.slice(0, LOG_PREVIEW_ITEMS).map((entry) => pickPreviewFields(entry));
+    }
+
+    const preferredKeys = [
+        "code",
+        "name",
+        "title",
+        "id",
+        "href",
+        "uri",
+        "date",
+        "ts",
+        "oldValue",
+        "newValue",
+        "oldText",
+        "newText",
+    ];
+
+    const summary = {};
+
+    for (const key of preferredKeys) {
+        if (key in item && summary[key] === undefined) {
+            const value = item[key];
+            summary[key] = typeof value === "string" ? truncateLogString(value, 240) : value;
+        }
+    }
+
+    if (Object.keys(summary).length > 0) return summary;
+
+    for (const [key, value] of Object.entries(item).slice(0, LOG_PREVIEW_KEYS)) {
+        if (value == null || typeof value === "number" || typeof value === "boolean") {
+            summary[key] = value;
+        } else if (typeof value === "string") {
+            summary[key] = truncateLogString(value, 240);
+        } else if (Array.isArray(value)) {
+            summary[key] = `[array:${value.length}]`;
+        } else if (typeof value === "object") {
+            summary[key] = `[object:${Object.keys(value).length}]`;
+        } else {
+            summary[key] = String(value);
+        }
+    }
+
+    return summary;
+}
+
+function previewCollection(value) {
+    if (Array.isArray(value)) {
+        return value.slice(0, LOG_PREVIEW_ITEMS).map((item) => pickPreviewFields(item));
+    }
+
+    if (value && typeof value === "object") {
+        const preview = {};
+
+        for (const [key, inner] of Object.entries(value).slice(0, LOG_PREVIEW_ITEMS)) {
+            preview[key] = Array.isArray(inner)
+                ? inner.slice(0, LOG_PREVIEW_ITEMS).map((item) => pickPreviewFields(item))
+                : pickPreviewFields(inner);
+        }
+
+        return preview;
+    }
+
+    return pickPreviewFields(value);
+}
+
+function countRecords(value) {
+    if (Array.isArray(value)) return value.length;
+    if (value && typeof value === "object") {
+        return Object.values(value).reduce((sum, current) => sum + countRecords(current), 0);
+    }
+
+    return value == null ? 0 : 1;
+}
+
+function summarizeDiffs({ added, removed, changed }) {
+    return {
+        addedCount: countRecords(added),
+        removedCount: countRecords(removed),
+        changedCount: countRecords(changed),
+        addedPreview: previewCollection(added),
+        removedPreview: previewCollection(removed),
+        changedPreview: previewCollection(changed),
+    };
+}
+
+function getPayloadSize(value) {
+    try {
+        return Buffer.byteLength(typeof value === "string" ? value : JSON.stringify(value ?? {}), "utf8");
+    } catch {
+        return null;
+    }
+}
+
+function safeLog(log, label, details) {
+    if (typeof log !== "function") return;
+
+    try {
+        if (details === undefined) {
+            log(label);
+            return;
+        }
+
+        const serialized = JSON.stringify(details, (_key, value) => {
+            if (typeof value === "string") return truncateLogString(value);
+            return value;
+        });
+
+        log(`${label} ${truncateLogString(serialized, 4000)}`);
+    } catch (err) {
+        try {
+            log(`${label} {"logError":"${truncateLogString(err?.message || String(err), 300)}"}`);
+        } catch {
+            // logging should never break the main flow
+        }
+    }
+}
+
+function createTraceId(distillPayload) {
+    const baseId = String(distillPayload?.id || "unknown")
+        .replace(/[^a-zA-Z0-9_-]/g, "_")
+        .slice(0, 40);
+
+    const tsRaw = distillPayload?.ts ? Date.parse(distillPayload.ts) : Date.now();
+    const ts = Number.isFinite(tsRaw) ? tsRaw : Date.now();
+
+    return `${baseId}_${ts.toString(36)}`;
+}
+
 // =====================
 //  RETRY + THROTTLE HELPERS
 // =====================
@@ -189,6 +331,51 @@ async function sendReportMail({ meta, added, removed, changed }) {
             changed,
         }),
     });
+}
+async function sendReportMail({ meta, added, removed, changed, traceId, log }) {
+    safeLog(log, "RUN 5/7 mail_dispatch_started", {
+        traceId,
+        mailFunctionUrl: MAIL_FUNCTION_URL,
+        to: meta?.to,
+        subject: meta?.subject || "Guncelleme Raporu",
+        diffSummary: summarizeDiffs({ added, removed, changed }),
+    });
+
+    const response = await fetch(MAIL_FUNCTION_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            to: meta.to,
+            subject: meta.subject || "Guncelleme Raporu",
+            meta,
+            added,
+            removed,
+            changed,
+            traceId,
+        }),
+    });
+
+    const responseText = await response.text().catch(() => "");
+    const responsePreview = truncateLogString(responseText, 1200);
+
+    safeLog(log, "RUN 6/7 mail_dispatch_finished", {
+        traceId,
+        status: response.status,
+        ok: response.ok,
+        bodyPreview: responsePreview,
+    });
+
+    if (!response.ok) {
+        throw new Error(
+            `Mail function failed. status=${response.status} body=${truncateLogString(responsePreview, 300)}`
+        );
+    }
+
+    return {
+        status: response.status,
+        ok: response.ok,
+        bodyPreview: responsePreview,
+    };
 }
 async function readPoolDocsByMetaUri(databases, poolCollection, allowedMetaUris = []) {
     const limit = 100;
@@ -3430,11 +3617,138 @@ async function run(distillPayload) {
     return { meta, added, removed, changed, mode };
 }
 
+async function run(distillPayload, log) {
+    const startedAt = Date.now();
+    const traceId = createTraceId(distillPayload);
+    const watcher = WATCHERS[distillPayload.id];
+
+    safeLog(log, "RUN start", {
+        traceId,
+        distillId: distillPayload?.id,
+        payloadSize: getPayloadSize(distillPayload),
+        mode: distillPayload?.mode || null,
+    });
+
+    if (!watcher) {
+        throw new Error(
+            `Bu Distill ID iÃ§in watcher tanÄ±mlÄ± deÄŸil: ${distillPayload.id}`
+        );
+    }
+
+    safeLog(log, "RUN 1/7 watcher_selected", {
+        traceId,
+        distillId: distillPayload.id,
+        watcherKeys: Object.keys(watcher || {}),
+    });
+
+    const { databases } = createClient();
+
+    const parseStartedAt = Date.now();
+    const { meta, newData } = watcher.parseNewData(distillPayload);
+
+    safeLog(log, "RUN 2/7 payload_parsed", {
+        traceId,
+        distillId: distillPayload.id,
+        metaId: meta?.id,
+        metaUri: meta?.uri,
+        newDataCount: countRecords(newData),
+        parseDurationMs: Date.now() - parseStartedAt,
+    });
+
+    const oldDataStartedAt = Date.now();
+    const oldData = await watcher.getOldData(databases, meta);
+
+    safeLog(log, "RUN 3/7 old_data_loaded", {
+        traceId,
+        distillId: distillPayload.id,
+        oldDataCount: countRecords(oldData),
+        oldDataDurationMs: Date.now() - oldDataStartedAt,
+    });
+
+    const compareStartedAt = Date.now();
+    const { added, removed, changed } = watcher.compare(oldData, newData);
+    const diffSummary = summarizeDiffs({ added, removed, changed });
+
+    safeLog(log, "RUN 4/7 diff_computed", {
+        traceId,
+        distillId: distillPayload.id,
+        compareDurationMs: Date.now() - compareStartedAt,
+        ...diffSummary,
+    });
+
+    const mode = distillPayload.mode || meta.mode || "direct";
+
+    if (mode === "pool") {
+        safeLog(log, "RUN 5/7 pool_enqueue_started", {
+            traceId,
+            distillId: distillPayload.id,
+            dbCollectionPool: distillPayload.dbCollectionPool || meta.dbCollectionPool || null,
+        });
+
+        await enqueueToPool(databases, meta, {
+            meta,
+            added,
+            removed,
+            dbCollectionPool: distillPayload.dbCollectionPool || meta.dbCollectionPool
+        });
+
+        safeLog(log, "RUN 6/7 pool_enqueue_finished", {
+            traceId,
+            distillId: distillPayload.id,
+            ...diffSummary,
+        });
+    } else if (mode === "seed") {
+        safeLog(log, "RUN 5/7 seed_mode_no_mail", {
+            traceId,
+            distillId: distillPayload.id,
+        });
+
+        safeLog(log, "RUN 6/7 seed_mode_completed", {
+            traceId,
+            distillId: distillPayload.id,
+            ...diffSummary,
+        });
+    } else {
+        await sendReportMail({ meta, added, removed, changed, traceId, log });
+    }
+
+    const syncStartedAt = Date.now();
+    await watcher.syncDb(databases, oldData, newData, removed, meta);
+
+    safeLog(log, "RUN 7/7 db_sync_finished", {
+        traceId,
+        distillId: distillPayload.id,
+        syncDurationMs: Date.now() - syncStartedAt,
+        totalDurationMs: Date.now() - startedAt,
+        mode,
+        ...diffSummary,
+    });
+
+    safeLog(log, "RUN finished", {
+        traceId,
+        distillId: distillPayload.id,
+        totalDurationMs: Date.now() - startedAt,
+        mode,
+    });
+
+    return { meta, added, removed, changed, mode, traceId };
+}
+
 // =====================
 //  APPWRITE FUNCTION HANDLER
 // =====================
 export default async ({ req, res, log, error }) => {
     try {
+        safeLog(log, "HTTP request_received", {
+            method: req?.method || "POST",
+            path: req?.path || "/",
+            payloadSize: getPayloadSize(req?.body),
+            headers: {
+                trigger: req.headers?.["x-appwrite-trigger"] || req.headers?.["X-Appwrite-Trigger"] || null,
+                debug: req.headers?.["x-debug-trigger"] || req.headers?.["X-Debug-Trigger"] || null,
+            },
+        });
+
         const trigger =
             req.headers?.["x-appwrite-trigger"] ||
             req.headers?.["X-Appwrite-Trigger"];
@@ -3447,7 +3761,11 @@ export default async ({ req, res, log, error }) => {
 
         if (isCron) {
             const { databases } = createClient();
+            safeLog(log, "CRON aggregate_started", {
+                triggeredBy: trigger === "schedule" ? "schedule" : "debug",
+            });
             const result = await aggregatePoolAndSend(databases);
+            safeLog(log, "CRON aggregate_finished", result);
 
             return res.json({
                 success: true,
@@ -3464,13 +3782,18 @@ export default async ({ req, res, log, error }) => {
             catch { body = {}; }
         }
 
-        const result = await run(body);
+        const result = await run(body, log);
 
         return res.json({
             success: true,
             ...result,
         });
     } catch (err) {
+        safeLog(log, "HTTP request_failed", {
+            message: err?.message ?? String(err),
+            stack: err?.stack ? truncateLogString(err.stack, 2000) : null,
+        });
+
         if (error) error(err);
         else console.error(err);
 
