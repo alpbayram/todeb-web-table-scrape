@@ -318,7 +318,7 @@ function getIstanbulDayKey(value = Date.now()) {
     return `${get("year")}-${get("month")}-${get("day")}`;
 }
 
-async function sendReportMail({ meta, added, removed, changed }) {
+async function sendReportMailLegacy_DO_NOT_USE({ meta, added, removed, changed }) {
     await fetch(MAIL_FUNCTION_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -3570,7 +3570,7 @@ const WATCHERS = {
 // =====================
 //  ANA MOTOR
 // =====================
-async function run(distillPayload) {
+async function runLegacy_DO_NOT_USE(distillPayload) {
     const watcher = WATCHERS[distillPayload.id];
 
     if (!watcher) {
