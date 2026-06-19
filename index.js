@@ -1,4 +1,4 @@
-import { Client, Databases, ID, Query } from "node-appwrite";
+import { Client, Databases, Functions, ID, Query } from "node-appwrite";
 
 // =====================
 //  CONFIG (.env'den)
@@ -9,6 +9,10 @@ const APPWRITE_API_KEY = process.env.APPWRITE_API_KEY;
 const APPWRITE_DATABASE_ID = process.env.DATABASE_ID;
 const BDDK_POOL_COLLECTION_ID = process.env.BDDK_POOL_COLLECTION_ID;
 const BDDK_BULK_TO = process.env.BDDK_BULK_TO;
+const MAIL_FUNCTION_ID =
+    process.env.MAIL_FUNCTION_ID ||
+    process.env.APPWRITE_MAIL_FUNCTION_ID ||
+    "6909b832001efa359c90";
 
 // Mail atan Appwrite Function endpoint’in
 const MAIL_FUNCTION_URL = "https://6909b832001efa359c90.fra.appwrite.run";
@@ -23,8 +27,9 @@ function createClient() {
         .setKey(APPWRITE_API_KEY);
 
     const databases = new Databases(client);
+    const functions = new Functions(client);
 
-    return { client, databases };
+    return { client, databases, functions };
 }
 
 const LOG_MAX_STRING = 1000;
@@ -336,45 +341,40 @@ async function sendReportMail({ meta, added, removed, changed, traceId, log }) {
     safeLog(log, "RUN 5/7 mail_dispatch_started", {
         traceId,
         mailFunctionUrl: MAIL_FUNCTION_URL,
+        mailFunctionId: MAIL_FUNCTION_ID,
         to: meta?.to,
         subject: meta?.subject || "Guncelleme Raporu",
         diffSummary: summarizeDiffs({ added, removed, changed }),
     });
 
-    const response = await fetch(MAIL_FUNCTION_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-            to: meta.to,
-            subject: meta.subject || "Guncelleme Raporu",
-            meta,
-            added,
-            removed,
-            changed,
-            traceId,
-        }),
+    const { functions } = createClient();
+    const body = JSON.stringify({
+        to: meta.to,
+        subject: meta.subject || "Guncelleme Raporu",
+        meta,
+        added,
+        removed,
+        changed,
+        traceId,
     });
 
-    const responseText = await response.text().catch(() => "");
-    const responsePreview = truncateLogString(responseText, 1200);
+    const execution = await functions.createExecution(
+        String(MAIL_FUNCTION_ID).trim(),
+        body,
+        true
+    );
 
     safeLog(log, "RUN 6/7 mail_dispatch_finished", {
         traceId,
-        status: response.status,
-        ok: response.ok,
-        bodyPreview: responsePreview,
+        queued: true,
+        executionId: execution?.$id || null,
+        executionStatus: execution?.status || null,
     });
 
-    if (!response.ok) {
-        throw new Error(
-            `Mail function failed. status=${response.status} body=${truncateLogString(responsePreview, 300)}`
-        );
-    }
-
     return {
-        status: response.status,
-        ok: response.ok,
-        bodyPreview: responsePreview,
+        queued: true,
+        executionId: execution?.$id || null,
+        executionStatus: execution?.status || null,
     };
 }
 async function readPoolDocsByMetaUri(databases, poolCollection, allowedMetaUris = []) {
@@ -496,7 +496,7 @@ function buildBulkPayloadFromPool(payloads, job) {
     return bulk;
 }
 
-async function aggregatePoolAndSend(databases) {
+async function aggregatePoolAndSend(databases, log) {
     const poolCollection = BDDK_POOL_COLLECTION_ID;
     if (!poolCollection) throw new Error("BDDK_POOL_COLLECTION_ID env yok.");
 
@@ -561,7 +561,9 @@ async function aggregatePoolAndSend(databases) {
             meta: bulkPayload.meta,
             added: bulkPayload.added,
             removed: bulkPayload.removed,
-            changed: bulkPayload.changed
+            changed: bulkPayload.changed,
+            traceId: `agg_${job.watcherId}_${Date.now().toString(36)}`,
+            log,
         });
 
         // 6) sadece seçilen doc’ları sil
@@ -3764,7 +3766,7 @@ export default async ({ req, res, log, error }) => {
             safeLog(log, "CRON aggregate_started", {
                 triggeredBy: trigger === "schedule" ? "schedule" : "debug",
             });
-            const result = await aggregatePoolAndSend(databases);
+            const result = await aggregatePoolAndSend(databases, log);
             safeLog(log, "CRON aggregate_finished", result);
 
             return res.json({
